@@ -1,11 +1,5 @@
 @echo off
 
-where /q dotnet
-
-if errorlevel 1 (
-    exit /B 1
-)
-
 where /q node
 
 if errorlevel 1 (
@@ -14,21 +8,12 @@ if errorlevel 1 (
 
 set SRRoot=%~dp0\data
 
-pushd ..\webadmin\server
-dotnet publish -c Release
-popd
-
-mkdir %SRRoot%\webadmin\wwwroot\
-mkdir %SRRoot%\webadmin\server\bin\Release\netstandard2.0\publish\
-copy /y ..\webadmin\fxmanifest.lua %SRRoot%\webadmin\
-
-xcopy /y /e ..\webadmin\wwwroot\. %SRRoot%\webadmin\wwwroot\
-xcopy /y /e ..\webadmin\server\bin\Release\netstandard2.0\publish\. %SRRoot%\webadmin\server\bin\Release\netstandard2.0\publish\
-
 pushd ..\txAdmin
-call npm install -g npm@7.19.1
-call npm ci
-call npm run build 2>&1 | findstr /V "not found"
+rmdir /s /q dist
+
+call npm install npm@8.13.2
+call node_modules\.bin\npm ci
+call node_modules\.bin\npm run build 2>&1 | findstr /V "not found"
 popd
 
 rmdir /s /q %SRRoot%\monitor\

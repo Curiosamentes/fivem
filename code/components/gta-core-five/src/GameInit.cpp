@@ -18,6 +18,10 @@
 #include <CoreConsole.h>
 #include <scrEngine.h>
 
+#include <KnownFolders.h>
+#include <ShlObj.h>
+#include <Error.h>
+
 #include <CrossBuildRuntime.h>
 
 FiveGameInit g_gameInit;
@@ -34,6 +38,11 @@ static hook::cdecl_stub<void(int unk, uint32_t* titleHash, uint32_t* messageHash
 		return hook::get_call<void*>(hook::get_call(hook::pattern("57 41 56 41 57 48 83 EC 50 4C 63 F2").count(1).get(0).get<char>(0xAC)) + 0x6D);
 	}
 
+	if (xbr::IsGameBuildOrGreater<2699>())
+	{
+		return hook::get_pattern("44 38 ? ? ? ? ? 0F 85 C5 02 00 00 E8", -0x38);
+	}
+
 	return hook::get_pattern("44 38 ? ? ? ? ? 0F 85 C2 02 00 00 E8", -0x3A);
 });
 
@@ -44,9 +53,15 @@ static hook::cdecl_stub<int(bool, int)> getWarningResult([] ()
 
 static bool g_showWarningMessage;
 static std::string g_warningMessage;
+extern volatile bool g_isNetworkKilled;
 
 void FiveGameInit::KillNetwork(const wchar_t* errorString)
 {
+	if (g_isNetworkKilled)
+	{
+		return;
+	}
+
 	if (errorString == (wchar_t*)1)
 	{
 		OnKillNetwork("Reloading game.");
@@ -151,6 +166,93 @@ static hook::cdecl_stub<void(void*)> _textInputBox_loadGfx([]()
 {
 	return hook::get_call(hook::get_pattern("38 59 59 75 05 E8", 5));
 });
+
+static bool (*g_isScWaitingForInit)();
+
+void RunRlInitServicing()
+{
+	if (xbr::IsGameBuildOrGreater<2699>())
+	{
+		((void (*)())hook::get_adjusted(0x1400069F4))();
+		((void (*)())hook::get_adjusted(0x1407FE28C))();
+		((void (*)())hook::get_adjusted(0x140027C20))();
+		((void (*)(void*))hook::get_adjusted(0x14160A9AC))((void*)hook::get_adjusted(0x142FF1F70));
+	}
+	else if (xbr::IsGameBuildOrGreater<2612>())
+	{
+		((void (*)())hook::get_adjusted(0x140006C38))();
+		((void (*)())hook::get_adjusted(0x1407FB420))();
+		((void (*)())hook::get_adjusted(0x14002778C))();
+		((void (*)(void*))hook::get_adjusted(0x1416135F8))((void*)hook::get_adjusted(0x142E710F0));
+	}
+	else if (xbr::IsGameBuildOrGreater<2545>())
+	{
+		((void (*)())hook::get_adjusted(0x140006A28))();
+		((void (*)())hook::get_adjusted(0x1407FB28C))();
+		((void (*)())hook::get_adjusted(0x1400275C8))();
+		((void (*)(void*))hook::get_adjusted(0x141612950))((void*)hook::get_adjusted(0x142E6F960));
+	}
+	else if (xbr::IsGameBuildOrGreater<2372>())
+	{
+		((void (*)())hook::get_adjusted(0x140006718))();
+		((void (*)())hook::get_adjusted(0x1407F6050))();
+		((void (*)())hook::get_adjusted(0x1400263CC))();
+		((void (*)(void*))hook::get_adjusted(0x14160104C))((void*)hook::get_adjusted(0x142E34900));
+	}
+	else if (!xbr::IsGameBuildOrGreater<2060>())
+	{
+		((void (*)())hook::get_adjusted(0x1400067E8))();
+		((void (*)())hook::get_adjusted(0x1407D1960))();
+		((void (*)())hook::get_adjusted(0x140025F7C))();
+		((void (*)(void*))hook::get_adjusted(0x141595FD4))((void*)hook::get_adjusted(0x142DC9BA0));
+	}
+	else if (xbr::IsGameBuildOrGreater<2189>())
+	{
+		((void (*)())hook::get_adjusted(0x140006748))();
+		((void (*)())hook::get_adjusted(0x1407F4150))();
+		((void (*)())hook::get_adjusted(0x140026120))();
+		((void (*)(void*))hook::get_adjusted(0x1415E4AC8))((void*)hook::get_adjusted(0x142E5C2D0));
+	}
+	else
+	{
+		((void (*)())hook::get_adjusted(0x140006A80))();
+		((void (*)())hook::get_adjusted(0x1407EB39C))();
+		((void (*)())hook::get_adjusted(0x1400263A4))();
+		((void (*)(void*))hook::get_adjusted(0x1415CF268))((void*)hook::get_adjusted(0x142D3DCC0));
+	}
+}
+
+void WaitForRlInit()
+{
+	assert(g_isScWaitingForInit);
+
+	auto waitForRlInitStart = GetTickCount64();
+
+	while (g_isScWaitingForInit())
+	{
+		// if stuck waiting for over a minute, likely this errored out
+		if ((GetTickCount64() - waitForRlInitStart) > 60000)
+		{
+			{
+				PWSTR appdataPath = nullptr;
+				SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appdataPath);
+
+				_wunlink(va(L"%s\\CitizenFX\\ros_id%s.dat", appdataPath, IsCL2() ? L"CL2" : L""));
+			}
+
+			FatalError("Took too long in WaitForRlInit\nWaiting for R* SC SDK initialization took too long. Please restart your game and try again.\n\nIf this issue reoccurs, there might be a problem with cached entitlement tickets.");
+		}
+
+		RunRlInitServicing();
+
+		Sleep(50);
+	}
+}
+
+void SetScInitWaitCallback(bool (*cb)())
+{
+	g_isScWaitingForInit = cb;
+}
 
 static InitFunction initFunction([] ()
 {

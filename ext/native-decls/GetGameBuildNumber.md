@@ -18,10 +18,13 @@ Possible values:
   * 2189
   * 2372
   * 2545
+  * 2612
+  * 2699
 * RedM
   * 1311
   * 1355
   * 1436
+  * 1491
 * LibertyM
   * 43
 * FXServer

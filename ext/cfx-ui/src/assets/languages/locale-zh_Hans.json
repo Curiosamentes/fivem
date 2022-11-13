@@ -33,7 +33,7 @@
     "#Settings_StreamerMode": "流光模式",
     "#BottomNav_Story": "故事模式",
     "#ServerList_StreamerModeWarning": "旁听者模式已启用-麦克风已停用",
-    "#BottomNav_Home": "主界面",
+    "#BottomNav_Home": "首页",
     "#ServerList_RemoveFavorite": "取消收藏",
     "#ServerList_Players": "玩家数量",
     "#Servers_ConnectingToServer": "正在连接至服务器...",
@@ -97,5 +97,6 @@
     "#Settings_LowPerf_ReduceFull": "移除虚化背景",
     "#Settings_LowPerfModeDesc": " ",
     "#Settings_Boost": "当前服务器加成™",
-    "#Servers_Error": "错误 (Error)"
+    "#Servers_Error": "错误 (Error)",
+    "#ServerList_SearchHintWeb": "搜索"
 }

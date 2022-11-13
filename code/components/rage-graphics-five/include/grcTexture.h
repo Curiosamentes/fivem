@@ -144,8 +144,17 @@ public:
 
 struct grcManualTextureDef
 {
+	// bit flag:
+	// | 1 -> dynamic texture (no internal staging texture)
+	// | 2 -> unknown
 	int isStaging;
-	char pad[20];
+	int unk1;
+	// flag, sorta:
+	// == 0 -> immutable
+	// == 1 -> writable?
+	// == 2 -> other weird case
+	int usage;
+	char pad[12];
 	int isRenderTarget;
 	char pad2[8];
 	int arraySize;
@@ -159,7 +168,7 @@ public:
 
 	virtual grcTexture* unk_8() = 0;
 
-	virtual grcTexture* createManualTexture(short width, short height, int format, void* unknown, bool, const grcManualTextureDef* templ) = 0;
+	virtual grcTexture* createManualTexture(short width, short height, int format, const void* initialData, bool unused, const grcManualTextureDef* templ) = 0;
 
 	virtual grcTexture* createImage(grcTextureReference* texture, void* unkTemplate) = 0;
 

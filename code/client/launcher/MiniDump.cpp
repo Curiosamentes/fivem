@@ -81,19 +81,35 @@ static json load_json_file(const std::wstring& path)
 
 static void send_sentry_session(const json& data)
 {
+	constexpr int sentryProjectId =
+#ifndef IS_RDR3
+	2
+#else
+	11
+#endif
+	;
+
+	constexpr std::string_view sentryKey =
+#ifndef IS_RDR3
+	"9902acf744d546e98ca357203f19278b"
+#else
+	"22f37206f3a64544bbd9b3ca9c5c2891"
+#endif
+	;
+
 	std::stringstream bodyData;
 	bodyData << "{}\n";
 	bodyData << R"({"type":"session"})" << "\n";
 	bodyData << data.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace) << "\n";
 
 	auto r = cpr::Post(
-	cpr::Url{ "https://sentry.fivem.net/api/2/envelope/" },
+	cpr::Url{ fmt::sprintf("https://sentry.fivem.net/api/%d/envelope/", sentryProjectId) },
 	cpr::Body{bodyData.str()},
 	cpr::VerifySsl{ false },
 	cpr::Header{
 		{
 			"X-Sentry-Auth",
-			fmt::sprintf("Sentry sentry_version=7, sentry_key=9902acf744d546e98ca357203f19278b")
+			fmt::sprintf("Sentry sentry_version=7, sentry_key=%s", sentryKey)
 		}
 	},
 	cpr::Timeout{ 2500 });
@@ -191,6 +207,8 @@ static json load_error_pickup()
 	return load_json_file(L"data\\cache\\error-pickup");
 }
 
+static std::map<std::string, std::string> g_lastCrashometry;
+
 static std::map<std::string, std::string> load_crashometry()
 {
 	std::map<std::string, std::string> rv;
@@ -220,6 +238,8 @@ static std::map<std::string, std::string> load_crashometry()
 		fclose(f);
 	}
 
+	g_lastCrashometry = rv;
+
 	return rv;
 }
 
@@ -227,14 +247,12 @@ static std::wstring crashHash;
 
 static std::wstring HashCrash(const std::wstring& key);
 
-static void add_crashometry(json& data)
+template<bool Replace, typename TMap>
+static void ConvertCrashometry(const TMap& map, json& data)
 {
-	auto map = load_crashometry();
-	_wunlink(MakeRelativeCitPath(L"data\\cache\\crashometry").c_str());
-
 	for (const auto& pair : map)
 	{
-		data["crashometry_" + pair.first] = boost::algorithm::replace_all_copy(pair.second, "\n", "~n~");
+		data["crashometry_" + pair.first] = (Replace) ? boost::algorithm::replace_all_copy(pair.second, "\n", "~n~") : pair.second;
 	}
 
 	if (!crashHash.empty())
@@ -245,6 +263,12 @@ static void add_crashometry(json& data)
 		data["crash_hash_id"] = HashString(ch.c_str());
 		data["crash_hash_key"] = ToNarrow(HashCrash(crashHash));
 	}
+}
+
+static void add_crashometry(json& data)
+{
+	auto map = load_crashometry();
+	ConvertCrashometry<true>(map, data);
 }
 
 static auto GetMinidumpGamePath() -> std::wstring
@@ -311,8 +335,10 @@ static void OverloadCrashData(TASKDIALOGCONFIG* config)
 
 		if (!pickup.is_null())
 		{
+			auto pickupMessage = pickup["message"].get<std::string>();
+
 			static std::wstring errTitle = fmt::sprintf(PRODUCT_NAME L" has encountered an error");
-			static std::wstring errDescription = ToWide(ParseLinks(pickup["message"].get<std::string>()));
+			static std::wstring errDescription = ToWide(ParseLinks(pickupMessage));
 
 			if (errDescription.find(L'\n') != std::string::npos)
 			{
@@ -324,6 +350,12 @@ static void OverloadCrashData(TASKDIALOGCONFIG* config)
 				{
 					errDescription = errDescription.substr(msgStart);
 				}
+			}
+			else if (ParseLinks(pickupMessage) == pickupMessage)
+			{
+				// no newlines -> show a distinct enough error anyway (if no links)
+				errTitle = errDescription;
+				errDescription = L" ";
 			}
 
 			config->pszMainInstruction = errTitle.c_str();
@@ -362,7 +394,7 @@ static void OverloadCrashData(TASKDIALOGCONFIG* config)
 		blame_two = L"Please try removing the above file from the \"plugins\" folder in your " PRODUCT_NAME L" installation and restarting the game.";
 	}
 
-	if (wcsstr(crashHash.c_str(), L"atidxx"))
+	if (wcsstr(crashHash.c_str(), L"atidxx") || wcsstr(crashHash.c_str(), L"amdxx"))
 	{
 		blame = L"AMD GPU drivers";
 		blame_two = L"Please try updating your Radeon Software, restarting your PC and then starting the game again.";
@@ -586,6 +618,21 @@ static void GatherCrashInformation()
 					}
 				}
 
+				if (!g_lastCrashometry.empty())
+				{
+					json j = json::object();
+					ConvertCrashometry<false>(g_lastCrashometry, j);
+
+					mz_zip_file info = { 0 };
+					info.filename = "crashometry.json";
+					info.filename_size = strlen("crashometry.json") + 1;
+					info.compression_method = MZ_COMPRESS_METHOD_DEFLATE;
+					info.modified_date = time(NULL);
+
+					std::string dumped = j.dump(4, ' ', false, nlohmann::detail::error_handler_t::replace);
+					mz_zip_writer_add_buffer(writer, const_cast<char*>(dumped.c_str()), dumped.length(), &info);
+				}
+
 				success = true;
 			}
 		}
@@ -737,6 +784,7 @@ extern void ParseSymbolicCrash(nlohmann::json& crash, std::string* signature, st
 void InitializeDumpServer(int inheritedHandle, int parentPid)
 {
 	static bool g_running = true;
+	static bool g_hasTriggeredTermination = false;
 
 	// needed to initialize logging(!)
 	trace("DumpServer is active and waiting.\n");
@@ -797,11 +845,19 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 
 			void Process(const ClientInfo* info, const std::wstring* filePathRef, HANDLE crashReport)
 			{
+				if (g_hasTriggeredTermination)
+				{
+					SetEvent(hDone);
+					return;
+				}
+
 				auto filePathData = *filePathRef;
 				auto filePath = &filePathData;
 
 				auto process_handle = info->process_handle();
 				DWORD exceptionCode = 0;
+
+				bool isAccessDeath = false;
 
 				json symCrash;
 
@@ -846,6 +902,8 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 									}
 								}
 
+								HMODULE baseModule = nullptr;
+
 								bool moduleFound = false;
 								DWORD processLen = 0;
 								if (EnumProcessModules(process_handle, nullptr, 0, &processLen))
@@ -854,6 +912,11 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 
 									if (EnumProcessModules(process_handle, buffer.data(), buffer.size() * sizeof(HMODULE), &processLen))
 									{
+										if (processLen > 0)
+										{
+											baseModule = buffer[0];
+										}
+
 										for (HMODULE module : buffer)
 										{
 											const wchar_t* moduleBaseString = L"";
@@ -974,6 +1037,19 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 									}
 								}
 
+								if (baseModule)
+								{
+									uintptr_t moduleBase = (uintptr_t)baseModule;
+
+									if (ex.ExceptionCode == STATUS_ACCESS_VIOLATION &&
+										ex.ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT &&
+										(uintptr_t)ex.ExceptionAddress >= (moduleBase + 0x1000) &&
+										(uintptr_t)ex.ExceptionAddress < (moduleBase + 0x2000))
+									{
+										isAccessDeath = true;
+									}
+								}
+
 								// store exception code
 								exceptionCode = ex.ExceptionCode;
 
@@ -1067,23 +1143,16 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 					}
 				}
 
+				// *final* checkpoint for reading `info`
 				info = nullptr;
-				SetEvent(hDone);
 
 				std::map<std::wstring, std::wstring> parameters;
-#ifdef GTA_NY
-				parameters[L"ProductName"] = L"CitizenFX";
-				parameters[L"Version"] = L"1.0";
-				parameters[L"BuildID"] = L"20141213000000"; // todo i bet
-#elif defined(GTA_FIVE)
 				LoadOwnershipTicket();
 
 				if (g_entitlementSource.empty())
 				{
 					g_entitlementSource = "default";
 				}
-
-				parameters[L"ProductName"] = L"FiveM";
 
 				FILE* f = _wfopen(MakeRelativeCitPath(L"citizen/release.txt").c_str(), L"r");
 
@@ -1104,10 +1173,6 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 				parameters[L"BuildID"] = L"20170101";
 				parameters[L"UserID"] = ToWide(g_entitlementSource);
 
-				parameters[L"prod"] = L"FiveM";
-				parameters[L"ver"] = L"1.0";
-#endif
-
 				auto crashometry = load_crashometry();
 
 				parameters[L"Product"] = PRODUCT_NAME;
@@ -1123,6 +1188,47 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 
 				std::map<std::wstring, std::wstring> files;
 				files[L"upload_file_minidump"] = *filePath;
+
+				// ask the game if it has any additional information to share
+				{
+					HostSharedData<CfxState> hostData("CfxInitState");
+					HANDLE gameProcess = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, FALSE, hostData->gamePid);
+
+					if (!gameProcess)
+					{
+						gameProcess = parentProcess;
+					}
+
+					if (gameProcess)
+					{
+						std::string logPath = fmt::sprintf("%s.gamelog", ToNarrow(*filePath));
+
+						LPVOID memPtr = VirtualAllocEx(gameProcess, NULL, logPath.size() + 1, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+
+						if (memPtr)
+						{
+							WriteProcessMemory(gameProcess, memPtr, logPath.data(), logPath.size() + 1, NULL);
+						}
+
+						auto func = GetFunc(gameProcess, "TryCollectCrashLog");
+
+						if (func)
+						{
+							HANDLE hThread = CreateRemoteThread(gameProcess, NULL, 0, func, memPtr, 0, NULL);
+
+							if (hThread)
+							{
+								WaitForSingleObject(hThread, 7500);
+								CloseHandle(hThread);
+
+								if (GetFileAttributesW(ToWide(logPath).c_str()) != INVALID_FILE_ATTRIBUTES)
+								{
+									files[L"upload_file_gamelog"] = ToWide(logPath);
+								}
+							}
+						}
+					}
+				}
 
 				// *instance global* initTickCount snapshot
 				static fwPlatformString dateStamp;
@@ -1175,6 +1281,21 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 							shouldUpload = false;
 						}
 					}
+				}
+
+				// do *not* modify shouldTerminate past this point
+
+				// if we should terminate the game, wait before marking the dump as 'done'
+				// we can't do this before, as we haven't set shouldTerminate yet
+				if (!shouldTerminate)
+				{
+					SetEvent(hDone);
+				}
+
+				// if this is a fatal crash, we should *not* try to process any further crashes
+				if (shouldTerminate)
+				{
+					g_hasTriggeredTermination = true;
 				}
 
 				windowTitle = PRODUCT_NAME;
@@ -1247,9 +1368,18 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 					content += fmt::sprintf(gettext(L"\nStack trace:\n%s"), ToWide(stackTrace));
 				}
 
+				if (isAccessDeath)
+				{
+					windowTitle = L"Fatal Error";
+					mainInstruction = L"Early-exit trap";
+					content = fmt::sprintf(L"A problem while running %s has tripped an early-exit trap.\n\nIf asking for support, please provide a readable 'report ID' from the expanded information below.", PRODUCT_NAME);
+				}
+
 				if (shouldTerminate)
 				{
-					std::thread([csignature]()
+					auto hDoneRef = hDone;
+
+					std::thread([csignature, hDone = hDoneRef]()
 					{
 						HostSharedData<CfxState> hostData("CfxInitState");
 						HANDLE gameProcess = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, FALSE, hostData->gamePid);
@@ -1300,6 +1430,10 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 								}
 							}
 						}
+
+						// this only runs if shouldTerminate, right before termination (and after calling the terminate handler)
+						// if this is the game process crashing, we need to hold off on 'releasing' the dump until the last chance we get
+						SetEvent(hDone);
 
 						TerminateProcess(parentProcess, -2);
 					})
@@ -1416,19 +1550,25 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 				};
 
 				// make the disconnect message less confusing
-				if (isDisconnectMessage)
+				if (isDisconnectMessage || isAccessDeath)
 				{
 					taskDialogConfig.dwFlags &= ~(TDF_USE_COMMAND_LINKS | TDF_EXPANDED_BY_DEFAULT);
 					taskDialogConfig.pszMainIcon = TD_WARNING_ICON;
 
 					saveStr = gettext(L"Save information");
 					buttons[0].pszButtonText = saveStr.c_str();
+
+					if (isAccessDeath)
+					{
+						taskDialogConfig.dwFlags |= TDF_EXPANDED_BY_DEFAULT;
+					}
 				}
 
 				OverloadCrashData(&taskDialogConfig);
 
 				// don't upload the 'launched directly' error
-				if (taskDialogConfig.pszContent && wcsstr(taskDialogConfig.pszContent, L"This application should be launched directly from the shell or a web browser."))
+				if ((taskDialogConfig.pszContent && wcsstr(taskDialogConfig.pszContent, L"This application should be launched directly from the shell or a web browser.")) ||
+					(taskDialogConfig.pszMainInstruction && wcsstr(taskDialogConfig.pszMainInstruction, L"This application should be launched directly from the shell or a web browser.")))
 				{
 					shouldUpload = false;
 				}
@@ -1487,7 +1627,7 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 				parameters[L"Fatal"] = (shouldTerminate) ? L"true" : L"false";
 
 				// upload the actual minidump file as well
-#if defined(GTA_FIVE)
+#if defined(GTA_FIVE) || defined(IS_RDR3)
 				if (uploadCrashes && shouldUpload && HTTPUpload::SendMultipartPostRequest(L"https://crash-ingress.fivem.net/post", parameters, files, &timeout, &responseBody, &responseCode))
 				{
 					trace("Crash report service returned %s\n", ToNarrow(responseBody));

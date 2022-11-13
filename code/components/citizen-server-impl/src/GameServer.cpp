@@ -190,7 +190,7 @@ namespace fx
 
 					auto loop = m_mainThreadLoop->GetLoop();
 
-					// periodic timer for network ticks
+					// periodic timer for main ticks
 					auto frameTime = 1000 / 20;
 
 					auto mpd = mainData.get();
@@ -232,6 +232,12 @@ namespace fx
 					{
 						m_mainThreadCallbacks->Run();
 					}));
+
+					// run remaining callbacks before we remove this callback list
+					if (m_mainThreadCallbacks)
+					{
+						m_mainThreadCallbacks->Run();
+					}
 
 					m_mainThreadCallbacks = std::make_unique<CallbackListUv>(mainData->callbackAsync);
 					m_mainThreadCallbacks->AttachToThread();
@@ -1192,8 +1198,6 @@ namespace fx
 
 	FxPrintListener printListener;
 
-	thread_local std::function<void(const std::string_view& cb)> FxPrintListener::listener;
-
 	namespace ServerDecorators
 	{
 		fwRefContainer<fx::GameServer> NewGameServer()
@@ -1389,9 +1393,14 @@ namespace fx
 						// reset rate limit for this key
 						limiter->Reset(from);
 
-						PrintListenerContext context([&](const std::string_view& print)
+						PrintListenerContext context([&printString](std::string_view print)
 						{
 							printString += print;
+						});
+
+						fx::PrintFilterContext filterContext([](ConsoleChannel& channel, std::string_view print)
+						{
+							channel = fmt::sprintf("rcon/%s", channel);
 						});
 
 						auto ctx = server->GetInstance()->GetComponent<console::Context>();
@@ -1500,11 +1509,15 @@ namespace fx
 			std::map<uint32_t, int> voteCounts;
 		};
 
-		// TODO: replace with system using dissectors
 		struct HeHostPacketHandler
 		{
 			inline static void Handle(ServerInstanceBase* instance, const fx::ClientSharedPtr& client, net::Buffer& packet)
 			{
+				if (IsOneSync())
+				{
+					return;
+				}
+
 				auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
 				auto gameServer = instance->GetComponent<fx::GameServer>();
 

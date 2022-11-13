@@ -43,10 +43,12 @@ rage::netObject* g_curNetObject;
 static std::set<uint16_t> g_dontParrotDeletionAcks;
 
 #ifdef GTA_FIVE
-static constexpr int g_netObjectTypeBitLength = 4;
+static constexpr int kNetObjectTypeBitLength = 4;
 #elif IS_RDR3
-static constexpr int g_netObjectTypeBitLength = 5;
+static constexpr int kNetObjectTypeBitLength = 5;
 #endif
+
+static constexpr int kSyncPacketMaxLength = 2400;
 
 void ObjectIds_AddObjectId(int objectId);
 void ObjectIds_StealObjectId(int objectId);
@@ -83,8 +85,6 @@ std::string GetType(void* d);
 CNetGamePlayer* GetLocalPlayer();
 
 CNetGamePlayer* GetPlayerByNetId(uint16_t);
-
-void UpdateTime(uint64_t serverTime, bool isInit = false);
 
 bool IsWaitingForTimeSync();
 
@@ -254,7 +254,7 @@ private:
 	};
 
 private:
-	LZ4_streamHC_t m_compStream;
+	LZ4_streamHC_t m_compStreamDict;
 
 	std::unordered_map<int, ObjectData> m_trackedObjects;
 
@@ -439,7 +439,7 @@ void CloneManagerLocal::BindNetLibrary(NetLibrary* netLibrary)
 
 	// #TODO: shutdown session logic!!
 	auto sbac = fx::StateBagComponent::Create(fx::StateBagRole::Client);
-	m_globalBag = sbac->RegisterStateBag("global");
+	m_globalBag = sbac->RegisterStateBag("global", true);
 
 	sbac->RegisterTarget(0);
 	sbac->AddSafePreCreatePrefix("entity:");
@@ -462,7 +462,13 @@ void CloneManagerLocal::BindNetLibrary(NetLibrary* netLibrary)
 
 	m_serverSendFrame = 0;
 
-	LZ4_initStreamHC(&m_compStream, sizeof(m_compStream));
+	LZ4_initStreamHC(&m_compStreamDict, sizeof(m_compStreamDict));
+
+	const static uint8_t dictBuffer[65536] = {
+#include <state/dict_five_20210329.h>
+	};
+
+	LZ4_loadDictHC(&m_compStreamDict, reinterpret_cast<const char*>(dictBuffer), std::size(dictBuffer));
 }
 
 void CloneManagerLocal::Reset()
@@ -485,7 +491,7 @@ void CloneManagerLocal::Reset()
 
 	// re-add the global bag, since Reset() removes it
 	m_globalBag = {}; // first unset, as the handle keeps by name and otherwise we'd remove it due to destruction order
-	m_globalBag = m_sbac->RegisterStateBag("global");
+	m_globalBag = m_sbac->RegisterStateBag("global", true);
 }
 
 void CloneManagerLocal::ProcessCreateAck(uint16_t objId, uint16_t uniqifier)
@@ -496,7 +502,16 @@ void CloneManagerLocal::ProcessCreateAck(uint16_t objId, uint16_t uniqifier)
 		return;
 	}
 
-	m_trackedObjects[objId].lastSyncAck = msec();
+	auto& lastSynAck = m_trackedObjects[objId];
+	
+	// first creation ACK, server acknowledged the entity is present on the server, so start sending extra data relevant to this entity (if any)
+	if (lastSynAck.lastSyncAck.count() == 0 && lastSynAck.stateBag)
+	{
+		lastSynAck.stateBag->EnableImmediateReplication(true);
+		lastSynAck.stateBag->SendQueuedUpdates();
+	}
+
+	lastSynAck.lastSyncAck = msec();
 
 	Log("%s: create ack %d\n", __func__, objId);
 }
@@ -910,7 +925,7 @@ void msgClone::Read(int syncType, rl::MessageBuffer& buffer)
 
 	if (syncType == 1)
 	{
-		m_entityType = (NetObjEntityType)buffer.Read<uint8_t>(g_netObjectTypeBitLength);
+		m_entityType = (NetObjEntityType)buffer.Read<uint8_t>(kNetObjectTypeBitLength);
 		m_creationToken = 0;
 
 		if (icgi->NetProtoVersion >= 0x202002271209)
@@ -1132,7 +1147,7 @@ bool CloneManagerLocal::HandleCloneCreate(const msgClone& msg)
 
 	if (!objectData.stateBag)
 	{
-		objectData.stateBag = m_sbac->RegisterStateBag(fmt::sprintf("entity:%d", msg.GetObjectId()));
+		objectData.stateBag = m_sbac->RegisterStateBag(fmt::sprintf("entity:%d", msg.GetObjectId()), true);
 	}
 
 	objectData.uniqifier = msg.GetUniqifier();
@@ -2018,13 +2033,7 @@ void CloneManagerLocal::Update()
 	{
 		if (clone.second)
 		{
-#ifdef GTA_FIVE
 			clone.second->Update();
-#elif IS_RDR3
-			clone.second->MainThreadUpdate();
-			clone.second->DependencyThreadUpdate();
-			clone.second->PostDependencyThreadUpdate();
-#endif
 
 #ifdef GTA_FIVE
 			if (clone.second->GetGameObject())
@@ -2101,7 +2110,8 @@ bool CloneManagerLocal::RegisterNetworkObject(rage::netObject* object)
 
 	if (!m_trackedObjects[object->GetObjectId()].stateBag)
 	{
-		m_trackedObjects[object->GetObjectId()].stateBag = m_sbac->RegisterStateBag(fmt::sprintf("entity:%d", object->GetObjectId()));
+		auto& stateBag = m_trackedObjects[object->GetObjectId()].stateBag = m_sbac->RegisterStateBag(fmt::sprintf("entity:%d", object->GetObjectId()), true);
+		stateBag->EnableImmediateReplication(false); // #TODO: potentially remove once throttling is implemented
 	}
 
 	Log("%s: registering %s (uniqifier: %d)\n", __func__, object->ToString(), m_trackedObjects[object->GetObjectId()].uniqifier);
@@ -2338,7 +2348,7 @@ void CloneManagerLocal::WriteUpdates()
 #endif
 
 		// allocate a RAGE buffer
-		uint8_t packetStub[1200] = { 0 };
+		uint8_t packetStub[kSyncPacketMaxLength] = { 0 };
 		rage::datBitBuffer rlBuffer(packetStub, sizeof(packetStub));
 
 		// if we want to delete this object
@@ -2568,7 +2578,7 @@ void CloneManagerLocal::WriteUpdates()
 							netBuffer.Write(32, g_objectIdToCreationToken[objectId]);
 						}
 
-						netBuffer.Write(g_netObjectTypeBitLength, objectType);
+						netBuffer.Write(kNetObjectTypeBitLength, objectType);
 					}
 
 					uint32_t len = rlBuffer.GetDataLength();
@@ -2711,18 +2721,17 @@ void CloneManagerLocal::SendUpdates(rl::MessageBuffer& buffer, uint32_t msgType)
 	{
 		buffer.Write(3, 7);
 
-		const static uint8_t dictBuffer[65536] = {
-#include <state/dict_five_20210329.h>
-		};
-
 		// compress and send data
 		std::vector<char> outData(LZ4_compressBound(buffer.GetDataLength()) + 4);
 		int len = 0;
 
 		if (icgi->NetProtoVersion >= 0x202103292050)
 		{
-			LZ4_loadDictHC(&m_compStream, reinterpret_cast<const char*>(dictBuffer), std::size(dictBuffer));
-			len = LZ4_compress_HC_continue(&m_compStream, reinterpret_cast<const char*>(buffer.GetBuffer().data()), outData.data() + 4, buffer.GetDataLength(), outData.size() - 4);
+			// see https://github.com/lz4/lz4/issues/399#issuecomment-329337170
+			LZ4_streamHC_t compStream;
+			memcpy(&compStream, &m_compStreamDict, sizeof(compStream));
+
+			len = LZ4_compress_HC_continue(&compStream, reinterpret_cast<const char*>(buffer.GetBuffer().data()), outData.data() + 4, buffer.GetDataLength(), outData.size() - 4);
 		}
 		else
 		{

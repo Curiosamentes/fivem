@@ -7,8 +7,6 @@
 
 #include "StdInc.h"
 
-#pragma comment(lib, "comctl32.lib")
-
 #ifndef IS_FXSERVER
 #include <jitasm.h>
 #include "Hooking.Aux.h"
@@ -21,7 +19,12 @@
 #include <shlobj.h>
 
 #include <winternl.h>
+
+#pragma comment(lib, "comctl32.lib")
 #include <commctrl.h>
+
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
 
 #include <CrossBuildRuntime.h>
 
@@ -59,9 +62,49 @@ static std::wstring g_scFilesRoot = g_programFilesRoot + L"\\Rockstar Games\\Soc
 static std::wstring g_scX86FilesRoot = g_programFilesX86Root + L"\\Rockstar Games\\Social Club";
 static std::wstring g_launcherFilesRoot = g_programFilesRoot + L"\\Rockstar Games\\Launcher";
 
+static std::vector<std::wstring> g_socialClubDlls = ([]
+{
+	std::vector<std::wstring> fns;
+
+	for (const auto fn : {
+		 L"cef.pak",
+		 L"cef_100_percent.pak",
+		 L"cef_200_percent.pak",
+		 L"chrome_elf.dll",
+		 L"d3dcompiler_47.dll",
+		 L"libcef.dll",
+		 L"libEGL.dll",
+		 L"libGLESv2.dll",
+		 L"scui.pak",
+		 L"snapshot_blob.bin",
+		 L"SocialClubHelper.exe",
+		 // RDR3 expects these to exist
+#ifndef IS_RDR3
+		 L"SocialClubD3D12Renderer.dll",
+		 L"SocialClubVulkanLayer.dll",
+#endif
+		 L"v8_context_snapshot.bin",
+		 L"swiftshader\\libEGL.dll",
+		 L"swiftshader\\libGLESv2.dll",
+		 })
+	{
+		fns.push_back(fmt::sprintf(L"Social Club\\%s", fn));
+	}
+
+	return fns;
+})();
+
 static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 {
 	//trace("map %s\n", ToNarrow(origFileName));
+
+	for (const auto& fileName : g_socialClubDlls)
+	{
+		if (StrStrIW(origFileName, fileName.c_str()) != NULL)
+		{
+			return MakeRelativeCitPath(L"bin\\libEGL.dll");
+		}
+	}
 
 	if (wcsstr(origFileName, L"autosignin.dat") != nullptr)
 	{
@@ -106,16 +149,6 @@ static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 	if (wcsstr(origFileName, L"LauncherPatcher.exe") != nullptr)
 	{
 		return MakeRelativeCitPath(L"nodontfuckingplaygtav.exe");
-	}
-
-	if (wcsstr(origFileName, L"NVIDIA Corporation\\NV_Cache") != nullptr)
-	{
-		return MakeRelativeCitPath(L"data\\cache\\") + &wcsstr(origFileName, L"NVIDIA Corporation\\NV_Cache")[19];
-	}
-
-	if (wcsstr(origFileName, L"NVIDIA\\DXCache") != nullptr)
-	{
-		return MakeRelativeCitPath(L"data\\cache\\NV_") + &wcsstr(origFileName, L"NVIDIA\\DXCache")[14];
 	}
 
 	// Program Files
@@ -252,12 +285,6 @@ static bool IsMappedFilename(const std::wstring& fileName)
 		return true;
 	}
 
-	if (fileName.find(L"NVIDIA Corporation\\NV_Cache") != std::string::npos ||
-		fileName.find(L"NVIDIA\\DXCache") != std::string::npos)
-	{
-		return true;
-	}
-
 	if (fileName.find(L"Data\\Local\\Rockstar Games\\Launcher") != std::string::npos ||
 		fileName.find(g_launcherAppDataRoot) != std::string::npos)
 	{
@@ -352,6 +379,34 @@ static bool IsMappedFilename(const std::wstring& fileName)
 	return false;
 }
 
+
+
+static thread_local std::tuple<uint16_t, uint16_t, uint16_t, uint16_t> g_nextFileVersion;
+
+static BOOL (WINAPI* g_origVerQueryValueW)(LPCVOID pBlock, LPCWSTR lpSubBlock, LPVOID* lplpBuffer, PUINT puLen);
+
+static BOOL WINAPI VerQueryValueWStub(LPCVOID pBlock, LPCWSTR lpSubBlock, LPVOID* lplpBuffer, PUINT puLen)
+{
+	auto retval = g_origVerQueryValueW(pBlock, lpSubBlock, lplpBuffer, puLen);
+
+	if (retval)
+	{
+		if (memcmp(lpSubBlock, L"\\", sizeof(wchar_t) * 2) == 0)
+		{
+			if (g_nextFileVersion != std::make_tuple<uint16_t, uint16_t, uint16_t, uint16_t>(0, 0, 0, 0))
+			{
+				auto buffer = (VS_FIXEDFILEINFO*)*lplpBuffer;
+				buffer->dwFileVersionMS = (std::get<0>(g_nextFileVersion) << 16) | std::get<1>(g_nextFileVersion);
+				buffer->dwFileVersionLS = (std::get<2>(g_nextFileVersion) << 16) | std::get<3>(g_nextFileVersion);
+
+				g_nextFileVersion = { 0, 0, 0, 0 };
+			}
+		}
+	}
+
+	return retval;
+}
+
 static DWORD(WINAPI* g_origGetFileVersionInfoSizeW)(_In_ LPCWSTR lptstrFilename, _Out_opt_ LPDWORD lpdwHandle);
 
 static DWORD WINAPI GetFileVersionInfoSizeWStub(_In_ LPCWSTR lptstrFilename, _Out_opt_ LPDWORD lpdwHandle)
@@ -367,7 +422,21 @@ static BOOL WINAPI GetFileVersionInfoWStub(_In_ LPCWSTR lptstrFilename, _Reserve
 {
 	std::wstring fileName = MapRedirectedFilename(lptstrFilename);
 
-	return g_origGetFileVersionInfoW(fileName.c_str(), dwHandle, dwLen, lpData);
+	BOOL retval = g_origGetFileVersionInfoW(fileName.c_str(), dwHandle, dwLen, lpData);
+
+	if (retval)
+	{
+		if (StrStrIW(lptstrFilename, L"Social Club\\SocialClub") != NULL)
+		{
+			g_nextFileVersion = {2, 0, 9, 0};
+		}
+		else if (StrStrIW(lptstrFilename, L"Social Club\\libcef.dll") != NULL)
+		{
+			g_nextFileVersion = {85, 3, 9, 0};
+		}
+	}
+
+	return retval;
 }
 
 static DWORD(WINAPI* g_origGetFileVersionInfoSizeA)(_In_ LPCSTR lptstrFilename, _Out_opt_ LPDWORD lpdwHandle);
@@ -533,10 +602,14 @@ NTSTATUS NTAPI LdrLoadDllStub(const wchar_t* fileName, uint32_t* flags, UNICODE_
 		moduleNameStr.find(L"crashhandler64.dll") != std::string::npos ||
 		// Ad Muncher, causes LoopbackTcpServer to crash
 		moduleNameStr.find(L"am64-34121.dll") != std::string::npos ||
+#if defined(IS_RDR3)
 		// 'Overwolf', corrupts memory on RDR (and is generally undesirable)
 		moduleNameStr.find(L"owclient.dll") != std::string::npos ||
 		moduleNameStr.find(L"ow-graphics-vulkan.dll") != std::string::npos ||
 		moduleNameStr.find(L"ow-graphics-hook64.dll") != std::string::npos ||
+#endif
+		// 'Lenovo Nerve Center'/'Lenovo Artery', leads to chrome_elf.dll crashing
+		moduleNameStr.find(L"gm_gametooldll_x64.dll") != std::string::npos ||
 #if !defined(IS_RDR3)
 		// VulkanRT loader, we don't use Vulkan, CEF does (to 'collect info'), and this crashes a lot of Vulkan drivers
 		moduleNameStr.find(L"vulkan-1.dll") != std::string::npos ||
@@ -1165,6 +1238,7 @@ extern "C" DLL_EXPORT void CoreSetMappingFunction(MappingFunctionType function)
 	MH_CreateHookApi(L"version.dll", "GetFileVersionInfoSizeA", GetFileVersionInfoSizeAStub, (void**)&g_origGetFileVersionInfoSizeA);
 	MH_CreateHookApi(L"version.dll", "GetFileVersionInfoW", GetFileVersionInfoWStub, (void**)&g_origGetFileVersionInfoW);
 	MH_CreateHookApi(L"version.dll", "GetFileVersionInfoA", GetFileVersionInfoAStub, (void**)&g_origGetFileVersionInfoA);
+	MH_CreateHookApi(L"version.dll", "VerQueryValueW", VerQueryValueWStub, (void**)&g_origVerQueryValueW);
 	MH_CreateHookApi(L"kernelbase.dll", "RegOpenKeyExW", RegOpenKeyExWStub, (void**)&g_origRegOpenKeyExW);
 	MH_CreateHookApi(L"kernelbase.dll", "GetFileAttributesExW", GetFileAttributesExWStub, (void**)&g_origGetFileAttributesExW);
 	MH_CreateHookApi(L"kernelbase.dll", "GetProcAddressForCaller", GetProcAddressStub, (void**)&g_origGetProcAddress);

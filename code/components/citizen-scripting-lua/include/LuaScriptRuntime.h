@@ -14,6 +14,7 @@
 #include "StdInc.h"
 
 #include <deque>
+#include <unordered_set>
 
 #include <fxScripting.h>
 
@@ -229,6 +230,10 @@ private:
 
 	std::deque<lua_State*> m_runningThreads;
 
+	std::unordered_set<uint32_t> m_nonExistentNatives;
+
+	std::list<std::tuple<uint64_t, int>> m_pendingBookmarks;
+
 public:
 	LuaScriptRuntime()
 	{
@@ -279,6 +284,11 @@ public:
 	LUA_INLINE auto GetBoundaryRoutine()
 	{
 		return m_boundaryRoutine;
+	}
+
+	LUA_INLINE auto& GetNonExistentNativesList()
+	{
+		return m_nonExistentNatives;
 	}
 
 	LUA_INLINE void SetBoundaryRoutine(int routine)
@@ -375,6 +385,10 @@ private:
 public:
 	bool RunBookmark(uint64_t bookmark);
 
+	void ScheduleBookmarkSoon(uint64_t bookmark, int timeout);
+
+	void SchedulePendingBookmarks();
+
 public:
 	NS_DECL_ISCRIPTRUNTIME;
 
@@ -394,5 +408,13 @@ public:
 
 	NS_DECL_ISCRIPTPROFILER;
 };
+
+void ScriptTraceV(const char* string, fmt::printf_args formatList);
+
+template<typename... TArgs>
+LUA_INLINE void ScriptTrace(const char* string, const TArgs&... args)
+{
+	ScriptTraceV(string, fmt::make_printf_args(args...));
+}
 }
 #endif

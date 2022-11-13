@@ -37,9 +37,26 @@ hook::cdecl_stub<rage::fiCollection*()> getRawStreamer([]()
 	return hook::get_call(hook::get_pattern("48 8B D3 4C 8B 00 48 8B C8 41 FF 90 ? 01 00 00", -5));
 });
 
-static bool ProcessHandler(HANDLE sema, char* a1)
+struct SemaAwaiter
 {
-	bool isSignaled = WaitForSingleObject(sema, 0) == WAIT_OBJECT_0;
+	bool operator()(void* sema) const
+	{
+		return WaitForSingleObject(sema, 0) == WAIT_OBJECT_0;
+	}
+};
+
+struct ByteAwaiter
+{
+	bool operator()(void* sema) const
+	{
+		return *((uint8_t*)sema + 0x1848);
+	}
+};
+
+template<typename Awaiter>
+static bool ProcessHandler(void* sema, char* a1)
+{
+	bool isSignaled = Awaiter()(sema);
 
 	if (!isSignaled)
 	{
@@ -68,7 +85,7 @@ static bool ProcessHandler(HANDLE sema, char* a1)
 	return isSignaled;
 }
 
-static void Hook_StreamingSema()
+static void Hook_StreamingSema2699()
 {
 	{
 		static struct : jitasm::Frontend
@@ -77,7 +94,53 @@ static void Hook_StreamingSema()
 			{
 				mov(rdx, rbx);
 
-				mov(rax, (uint64_t)&ProcessHandler);
+				mov(rax, (uint64_t)&ProcessHandler<ByteAwaiter>);
+				jmp(rax);
+			}
+		} weirdStub;
+
+		// rage::strStreamingLoader::ProcessStreamFiles
+		auto location = hook::get_pattern("8A 81 48 18 00 00 84 C0 0F 84 E5");
+		hook::nop(location, 6);
+		hook::call(location, weirdStub.GetCode());
+	}
+
+	{
+		static struct : jitasm::Frontend
+		{
+			virtual void InternalMain() override
+			{
+				mov(rdx, rsi);
+
+				mov(rax, (uint64_t)&ProcessHandler<ByteAwaiter>);
+				jmp(rax);
+			}
+		} weirdStub;
+
+		// rage::strStreamingLoader::Flush
+		auto location = hook::get_pattern("8A 81 48 18 00 00 84 C0 0F 84 10 01");
+		hook::nop(location, 6);
+		hook::call(location, weirdStub.GetCode());
+	}
+}
+
+static void Hook_StreamingSema()
+{
+	// 2699+ uses a byte instead of a sema, so needs its own patch
+	if (xbr::IsGameBuildOrGreater<2699>())
+	{
+		Hook_StreamingSema2699();
+		return;	
+	}
+
+	{
+		static struct : jitasm::Frontend
+		{
+			virtual void InternalMain() override
+			{
+				mov(rdx, rbx);
+
+				mov(rax, (uint64_t)&ProcessHandler<SemaAwaiter>);
 				jmp(rax);
 			}
 		} weirdStub;
@@ -93,7 +156,7 @@ static void Hook_StreamingSema()
 			{
 				mov(rdx, rsi);
 
-				mov(rax, (uint64_t)&ProcessHandler);
+				mov(rax, (uint64_t)&ProcessHandler<SemaAwaiter>);
 				jmp(rax);
 			}
 		} weirdStub;
@@ -164,7 +227,7 @@ static void ProcessRemoval()
 	}
 }
 
-static bool IsHandleCache(uint32_t handle, std::string* outFileName)
+bool IsHandleCache(uint32_t handle, std::string* outFileName)
 {
 	if (outFileName)
 	{
@@ -542,7 +605,7 @@ static HookFunction hookFunction([] ()
 
 	// redirect pgStreamer::Read for custom streaming reads
 	{
-		auto location = hook::get_pattern("45 8B CC 48 89 7C 24 28 48 89 44 24 20 E8", 13);
+		auto location = hook::get_pattern("45 8B ? 48 89 7C 24 28 48 89 44 24 20 E8", 13);
 		hook::set_call(&g_origPgStreamerRead, location);
 		hook::call(location, pgStreamerRead);
 	}
@@ -551,7 +614,7 @@ static HookFunction hookFunction([] ()
 
 	// rage::strStreamingLoader::CancelRequest hook (deprioritize canceled requests)
 	{
-		auto location = hook::get_pattern("B9 00 40 00 00 33 ED 48", -0x29);
+		auto location = hook::get_pattern("B9 00 40 00 00 33 ED 48", (xbr::IsGameBuildOrGreater<2699>()) ? -0x21: -0x29);
 		MH_CreateHook(location, CancelRequestWrap, (void**)&g_origCancelRequest);
 		MH_EnableHook(location);
 	}

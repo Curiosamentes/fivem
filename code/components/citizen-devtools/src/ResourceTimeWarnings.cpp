@@ -14,6 +14,7 @@
 
 #include <CfxLocale.h>
 
+#include <ResourceManager.h>
 #include "ResourceMonitor.h"
 
 DLL_IMPORT ImFont* GetConsoleFontTiny();
@@ -165,10 +166,19 @@ static void __declspec(noinline) StoppedRespondingScripts(const std::string& rea
 	FatalError(STOPPED_RESPONDING_MESSAGE("(script deadloop)"), reasoning);
 }
 
+static void __declspec(noinline) StoppedRespondingRenderQuery(const std::string& reasoning)
+{
+	FatalError(STOPPED_RESPONDING_MESSAGE("(DirectX query)"), reasoning);
+}
+
 static void __declspec(noinline) StoppedRespondingGeneric(const std::string& reasoning)
 {
 	FatalError(STOPPED_RESPONDING_MESSAGE(""), reasoning);
 }
+
+#ifdef GTA_FIVE
+extern DLL_IMPORT bool IsInRenderQuery();
+#endif
 
 static HookFunction hookFunctionGameTime([]()
 {
@@ -251,6 +261,7 @@ static HookFunction hookFunctionGameTime([]()
 				{
 					std::string reasoning;
 					bool scripts = false;
+					bool renderQuery = false;
 
 					if (!g_threadStack.empty())
 					{
@@ -268,6 +279,14 @@ static HookFunction hookFunctionGameTime([]()
 						reasoning = fmt::sprintf("\n\nThis is likely caused by a resource/script, the script stack is as follows: %s", s.str());
 						scripts = true;
 					}
+
+#ifdef GTA_FIVE
+					if (IsInRenderQuery())
+					{
+						reasoning += fmt::sprintf("\n\nGame code was waiting for the GPU to complete the last frame, but this timed out (the GPU got stuck?) - this could be caused by bad assets or graphics mods.");
+						renderQuery = true;
+					}
+#endif
 
 					bool nvidia = false;
 
@@ -322,6 +341,10 @@ static HookFunction hookFunctionGameTime([]()
 						{
 							StoppedRespondingScripts(reasoning);
 						}
+						else if (renderQuery)
+						{
+							StoppedRespondingRenderQuery(reasoning);
+						}
 						else if (nvidia)
 						{
 							StoppedRespondingNVIDIA(reasoning);
@@ -339,7 +362,8 @@ static HookFunction hookFunctionGameTime([]()
 
 static InitFunction initFunction([]()
 {
-	static std::unique_ptr<fx::ResourceMonitor> resourceMonitor;
+	static std::shared_mutex gResourceMonitorMutex;
+	static std::shared_ptr<fx::ResourceMonitor> gResourceMonitor;
 
 	static bool resourceTimeWarningShown;
 	static std::chrono::microseconds warningLastShown;
@@ -348,7 +372,40 @@ static InitFunction initFunction([]()
 
 	static bool taskMgrEnabled;
 
-	static ConVar<bool> taskMgrVar("resmon", ConVar_Archive, false, &taskMgrEnabled);
+	static ConVar<bool> taskMgrVar("resmon", ConVar_Archive | ConVar_UserPref, false, &taskMgrEnabled);
+
+	fx::ResourceManager::OnInitializeInstance.Connect([](fx::ResourceManager* manager)
+	{
+		manager->OnTick.Connect([]()
+		{
+			bool hadMonitor = false;
+
+			{
+				std::shared_lock _(gResourceMonitorMutex);
+				hadMonitor = gResourceMonitor.get() != nullptr;
+			}
+
+			// #TODO: SDK should explicitly notify the resource monitor is opened
+			if (taskMgrEnabled || launch::IsSDKGuest())
+			{
+				if (!hadMonitor)
+				{
+					std::unique_lock _(gResourceMonitorMutex);
+					gResourceMonitor = std::make_shared<fx::ResourceMonitor>();
+
+					gResourceMonitor->SetShouldGetMemory(true);
+				}
+			}
+			else
+			{
+				if (hadMonitor)
+				{
+					std::unique_lock _(gResourceMonitorMutex);
+					gResourceMonitor = {};
+				}
+			}
+		}, INT32_MIN);
+	});
 
 	fx::ResourceMonitor::OnWarning.Connect([](const std::string& warningText)
 	{
@@ -430,22 +487,11 @@ static InitFunction initFunction([]()
 		}
 #endif
 
-		// #TODO: SDK should explicitly notify the resource monitor is opened
-		if (taskMgrEnabled || launch::IsSDKGuest())
-		{
-			if (!resourceMonitor)
-			{
-				resourceMonitor = std::make_unique<fx::ResourceMonitor>();
+		std::shared_ptr<fx::ResourceMonitor> resourceMonitor;
 
-				resourceMonitor->SetShouldGetMemory(true);
-			}
-		}
-		else
 		{
-			if (resourceMonitor)
-			{
-				resourceMonitor = {};
-			}
+			std::shared_lock _(gResourceMonitorMutex);
+			resourceMonitor = gResourceMonitor;
 		}
 
 #ifndef IS_FXSERVER
@@ -539,7 +585,7 @@ static InitFunction initFunction([]()
 
 							for (int n = 0; n < sortSpecs->SpecsCount; n++)
 							{
-								const ImGuiTableSortSpecsColumn* sortSpec = &sortSpecs->Specs[n];
+								const ImGuiTableColumnSortSpecs* sortSpec = &sortSpecs->Specs[n];
 								int delta = 0;
 								switch (sortSpec->ColumnIndex)
 								{

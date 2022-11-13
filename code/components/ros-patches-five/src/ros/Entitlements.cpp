@@ -103,7 +103,7 @@ std::string GetEntitlementBlock(uint64_t accountId, const std::string& machineHa
 		FatalError("RS10");
 	}
 
-	std::string filePath = GetFilePath(fmt::sprintf("%08x_%lld_v2", HashString(machineHash.c_str()), accountId));
+	std::string filePath = GetFilePath(fmt::sprintf("%08x_%lld", HashString(machineHash.c_str()), accountId));
 
 	FILE* f = _wfopen(ToWide(filePath).c_str(), L"rb");
 
@@ -741,19 +741,41 @@ mapper->AddGameService("ugc.asmx/Publish", [](const std::string& body)
 			auto rs = rss.str();
 			rs = "";
 
-			if (xbr::IsGameBuild<1436>())
+			if (xbr::IsGameBuild<1491>())
 			{
 				return fmt::sprintf(R"(
 <?xml version="1.0" encoding="utf-8"?>
 <Response xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ms="0" xmlns="GetBuildManifestFull">
   <Status>1</Status>
-  <Result BuildId="83" VersionNumber="1.0.1436.28" BuildDateUtc="2019-11-05T11:39:37.0266667">
+  <Result BuildId="85" VersionNumber="1.0.1491.16" BuildDateUtc="2019-11-05T11:39:37.0266667">
     <FileManifest>
-		<FileDetails FileEntryId="9178" FileEntryVersionId="9648" FileSize="89849752" TimestampUtc="2019-11-05T11:39:34.8800000">
+		<FileDetails FileEntryId="9178" FileEntryVersionId="9648" FileSize="89045344" TimestampUtc="2019-11-05T11:39:34.8800000">
 			<RelativePath>RDR2.exe</RelativePath>
-			<SHA256Hash>d48c58d9df9ec17aca677da0f03ce1fd666c1f89f0f42422bbcc1de236ff9c26</SHA256Hash>
+			<SHA256Hash>a5f7613edf87f43b8af525f985e2546162645c96a770de90aaa870b0b9dd913f</SHA256Hash>
 			<FileChunks>
-				<Chunk FileChunkId="13046" SHA256Hash="d48c58d9df9ec17aca677da0f03ce1fd666c1f89f0f42422bbcc1de236ff9c26" StartByteOffset="0" Size="89849752" />
+				<Chunk FileChunkId="13046" SHA256Hash="a5f7613edf87f43b8af525f985e2546162645c96a770de90aaa870b0b9dd913f" StartByteOffset="0" Size="89045344" />
+			</FileChunks>
+		</FileDetails>
+%s
+    </FileManifest>
+    <IsPreload>false</IsPreload>
+  </Result>
+</Response>)",
+				rs);
+			}
+			else if (xbr::IsGameBuild<1436>())
+			{
+				return fmt::sprintf(R"(
+<?xml version="1.0" encoding="utf-8"?>
+<Response xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ms="0" xmlns="GetBuildManifestFull">
+  <Status>1</Status>
+  <Result BuildId="84" VersionNumber="1.0.1436.31" BuildDateUtc="2019-11-05T11:39:37.0266667">
+    <FileManifest>
+		<FileDetails FileEntryId="9178" FileEntryVersionId="9648" FileSize="89104336" TimestampUtc="2019-11-05T11:39:34.8800000">
+			<RelativePath>RDR2.exe</RelativePath>
+			<SHA256Hash>1ed4b36caad567acbed0cc3b3c917cb46843e82a88097cc8015efadeeb88b097</SHA256Hash>
+			<FileChunks>
+				<Chunk FileChunkId="13046" SHA256Hash="1ed4b36caad567acbed0cc3b3c917cb46843e82a88097cc8015efadeeb88b097" StartByteOffset="0" Size="89104336" />
 			</FileChunks>
 		</FileDetails>
 %s
@@ -821,6 +843,46 @@ mapper->AddGameService("ugc.asmx/Publish", [](const std::string& body)
 			<SHA256Hash>7b3c0053db37eca7c6cdd0ecd268882cdd5f693f416e5a8e97fd31de66324d04</SHA256Hash>
 			<FileChunks>
 				<Chunk FileChunkId="13046" SHA256Hash="7b3c0053db37eca7c6cdd0ecd268882cdd5f693f416e5a8e97fd31de66324d04" StartByteOffset="0" Size="55559560" />
+			</FileChunks>
+		</FileDetails>
+    </FileManifest>
+    <IsPreload>false</IsPreload>
+  </Result>
+</Response>)");
+			}
+			else if (xbr::IsGameBuild<2699>())
+			{
+				return fmt::sprintf(R"(
+<?xml version="1.0" encoding="utf-8"?>
+<Response xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ms="0" xmlns="GetBuildManifestFull">
+  <Status>1</Status>
+  <Result BuildId="96" VersionNumber="1.0.2699.0" BuildDateUtc="2021-11-05T11:39:37.0266667">
+    <FileManifest>
+		<FileDetails FileEntryId="9178" FileEntryVersionId="9648" FileSize="61111680" TimestampUtc="2021-11-05T11:39:34.8800000">
+			<RelativePath>GTA5.exe</RelativePath>
+			<SHA256Hash>7dc4a3a7516522e4a4b5869f2b09053da6b6829ab333ca0aa14a43aa45fd1e17</SHA256Hash>
+			<FileChunks>
+				<Chunk FileChunkId="13046" SHA256Hash="7dc4a3a7516522e4a4b5869f2b09053da6b6829ab333ca0aa14a43aa45fd1e17" StartByteOffset="0" Size="61111680" />
+			</FileChunks>
+		</FileDetails>
+    </FileManifest>
+    <IsPreload>false</IsPreload>
+  </Result>
+</Response>)");
+			}
+			else if (xbr::IsGameBuild<2612>())
+			{
+					return fmt::sprintf(R"(
+<?xml version="1.0" encoding="utf-8"?>
+<Response xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ms="0" xmlns="GetBuildManifestFull">
+  <Status>1</Status>
+  <Result BuildId="95" VersionNumber="1.0.2612.1" BuildDateUtc="2021-11-05T11:39:37.0266667">
+    <FileManifest>
+		<FileDetails FileEntryId="9178" FileEntryVersionId="9648" FileSize="60351952" TimestampUtc="2021-11-05T11:39:34.8800000">
+			<RelativePath>GTA5.exe</RelativePath>
+			<SHA256Hash>06b59a02747c3d9f74c6c3621756387f4d85b148a882f4a6735a03383875c1f9</SHA256Hash>
+			<FileChunks>
+				<Chunk FileChunkId="13046" SHA256Hash="06b59a02747c3d9f74c6c3621756387f4d85b148a882f4a6735a03383875c1f9" StartByteOffset="0" Size="60351952" />
 			</FileChunks>
 		</FileDetails>
     </FileManifest>
@@ -991,6 +1053,24 @@ mapper->AddGameService("ugc.asmx/Publish", [](const std::string& body)
 
 	mapper->AddGameService("app.asmx/GetApps", [](const std::string& body)
 	{
+		static std::map<int, int> fiveBuildsToVersions{
+			{ 372, 4 },
+			{ 1604, 80 },
+			{ 2060, 83 },
+			{ 2189, 88 },
+			{ 2372, 92 },
+			{ 2545, 94 },
+			{ 2612, 95 },
+			{ 2699, 96 },
+		};
+
+		static std::map<int, int> rdrBuildsToVersions{
+			{ 1311, 79 },
+			{ 1355, 80 },
+			{ 1436, 84 },
+			{ 1491, 85 },
+		};
+
 		return fmt::sprintf(R"(<?xml version="1.0" encoding="utf-8"?>
 <Response xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ms="0" xmlns="GetApps">
   <Status>1</Status>
@@ -1064,8 +1144,8 @@ mapper->AddGameService("ugc.asmx/Publish", [](const std::string& body)
     </App>
   </Result>
 </Response>)",
-		xbr::IsGameBuild<372>() ? 4 : (xbr::IsGameBuild<2060>() ? 83 : (xbr::IsGameBuild<2545>() ? 94 : (xbr::IsGameBuild<2372>() ? 92 : (xbr::IsGameBuild<2189>() ? 88 : 80)))),
-		xbr::IsGameBuild<1355>() ? 80 : (xbr::IsGameBuild<1436>() ? 83 : 79));
+		fiveBuildsToVersions[xbr::GetGameBuild()],
+		rdrBuildsToVersions[xbr::GetGameBuild()]);
 	});
 
 

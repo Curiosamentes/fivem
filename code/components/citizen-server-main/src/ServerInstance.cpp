@@ -152,7 +152,7 @@ namespace fx
 					{
 						forwardArgs(cmd, args);
 					}
-					else if (setList.find(cmd) != setList.end())
+					else if (setList.find(cmd) != setList.end() && args.Count() >= 1)
 					{
 						forwardArgs("set", ProgramArguments{ cmd, args.Get(0) });
 					}
@@ -233,6 +233,9 @@ namespace fx
 				{
 					consoleCtx->ExecuteSingleCommandDirect(ProgramArguments{ "start", "monitor" });
 				}
+
+				// default forwarded commands to no-print
+				consoleCtx->ExecuteSingleCommandDirect(ProgramArguments{ "con_addChannelFilter", "forward:*/*", "noprint" });
 
 				// add system console access
 				seGetCurrentContext()->AddAccessControlEntry(se::Principal{ "system.console" }, se::Object{ "webadmin" }, se::AccessType::Allow);

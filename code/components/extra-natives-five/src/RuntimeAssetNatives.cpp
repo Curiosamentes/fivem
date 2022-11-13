@@ -27,6 +27,8 @@
 #include <wrl.h>
 #include <wincodec.h>
 
+#include <nutsnbolts.h>
+
 #define WANT_CEF_INTERNALS
 #include <CefOverlay.h>
 
@@ -77,6 +79,8 @@ public:
 		return m_texture;
 	}
 
+	void SetTexture(rage::grcTexture* texture);
+
 private:
 	rage::grcTexture* m_texture;
 
@@ -114,14 +118,15 @@ RuntimeTex::RuntimeTex(const char* name, int width, int height)
 {
 	rage::grcManualTextureDef textureDef;
 	memset(&textureDef, 0, sizeof(textureDef));
-	textureDef.isStaging = 0;
+	textureDef.isStaging = 1;
+	textureDef.usage = 1;
 	textureDef.arraySize = 1;
 
 	m_texture = rage::grcTextureFactory::getInstance()->createManualTexture(width, height, 2, nullptr, true, &textureDef);
 
 	rage::grcLockedTexture lockedTexture;
 
-	if (m_texture->Map(0, 0, &lockedTexture, rage::grcLockFlags::Write))
+	if (m_texture->Map(0, 0, &lockedTexture, rage::grcLockFlags::WriteDiscard))
 	{
 		memset(lockedTexture.pBits, 0, lockedTexture.pitch * lockedTexture.height);
 		m_backingPixels.resize(lockedTexture.pitch * lockedTexture.height);
@@ -156,17 +161,25 @@ RuntimeTex::~RuntimeTex()
 
 int RuntimeTex::GetWidth()
 {
-	return m_texture->GetWidth();
+	return m_texture ? m_texture->GetWidth() : 0;
 }
 
 int RuntimeTex::GetHeight()
 {
-	return m_texture->GetHeight();
+	return m_texture ? m_texture->GetHeight() : 0;
 }
 
 int RuntimeTex::GetPitch()
 {
 	return m_pitch;
+}
+
+void RuntimeTex::SetTexture(rage::grcTexture* texture)
+{
+	if (!m_texture)
+	{
+		m_texture = texture;
+	}
 }
 
 void RuntimeTex::SetPixel(int x, int y, int r, int g, int b, int a)
@@ -193,9 +206,14 @@ bool RuntimeTex::SetPixelData(const void* data, size_t length)
 		return false;
 	}
 
+	if (!m_texture)
+	{
+		return false;
+	}
+
 	rage::grcLockedTexture lockedTexture;
 
-	if (m_texture->Map(0, 0, &lockedTexture, rage::grcLockFlags::Write))
+	if (m_texture->Map(0, 0, &lockedTexture, rage::grcLockFlags::WriteDiscard))
 	{
 		memcpy(lockedTexture.pBits, data, length);
 		memcpy(m_backingPixels.data(), data, length);
@@ -209,7 +227,7 @@ void RuntimeTex::Commit()
 {
 	rage::grcLockedTexture lockedTexture;
 
-	if (m_texture->Map(0, 0, &lockedTexture, rage::grcLockFlags::Write))
+	if (m_texture && m_texture->Map(0, 0, &lockedTexture, rage::grcLockFlags::WriteDiscard))
 	{
 		memcpy(lockedTexture.pBits, m_backingPixels.data(), m_backingPixels.size());
 		m_texture->Unmap(&lockedTexture);
@@ -272,6 +290,18 @@ RuntimeTex* RuntimeTxd::CreateTexture(const char* name, int width, int height)
 	return tex.get();
 }
 
+extern void TextureReplacement_OnTextureCreate(const std::string& txd, const std::string& txn);
+
+// TODO: we need a 'common' place for this
+static std::mutex nextFrameLock;
+static std::queue<std::function<void()>> nextFrameQueue;
+
+static void OnNextMainFrame(std::function<void()>&& fn)
+{
+	std::unique_lock _(nextFrameLock);
+	nextFrameQueue.push(std::move(fn));
+}
+
 RuntimeTex* RuntimeTxd::CreateTextureFromDui(const char* name, const char* duiHandle)
 {
 	if (!m_txd)
@@ -285,10 +315,20 @@ RuntimeTex* RuntimeTxd::CreateTextureFromDui(const char* name, const char* duiHa
 	}
 
 	auto texture = nui::GetWindowTexture(duiHandle);
-	auto tex = std::make_shared<RuntimeTex>((rage::grcTexture*)texture->GetHostTexture(), false);
+	auto tex = std::make_shared<RuntimeTex>(nullptr, false);
 	tex->SetReferenceData(texture);
 
-	m_txd->Add(name, tex->GetTexture());
+	texture->WithHostTexture([this, name = std::string{ name }, tex](void* hostTexture)
+	{
+		auto texture = (rage::grcTexture*)hostTexture;
+		tex->SetTexture(texture);
+		m_txd->Add(HashString(name), tex->GetTexture());
+
+		OnNextMainFrame([this, name = std::move(name)]()
+		{
+			TextureReplacement_OnTextureCreate(m_name, name);
+		});
+	});
 
 	m_textures[name] = tex;
 
@@ -876,6 +916,27 @@ fwArchetype* GetArchetypeSafe(uint32_t archetypeHash, uint64_t* archetypeUnk)
 
 static InitFunction initFunction([]()
 {
+	OnMainGameFrame.Connect([]
+	{
+		if (nextFrameQueue.empty())
+		{
+			return;
+		}
+
+		decltype(nextFrameQueue) q;
+
+		{
+			std::unique_lock _(nextFrameLock);
+			q = std::move(nextFrameQueue);
+		}
+
+		while (!q.empty())
+		{
+			q.front()();
+			q.pop();
+		}
+	});
+
 	scrBindClass<RuntimeTxd>()
 		.AddConstructor<void(*)(const char*)>("CREATE_RUNTIME_TXD")
 		.AddMethod("CREATE_RUNTIME_TEXTURE", &RuntimeTxd::CreateTexture)

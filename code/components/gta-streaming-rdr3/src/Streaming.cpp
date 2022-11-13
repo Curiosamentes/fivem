@@ -6,7 +6,7 @@ static void* g_storeMgr;
 
 static hook::cdecl_stub<void(bool)> g_loadObjectsNow([]()
 {
-	return hook::get_call(hook::get_pattern("33 C9 E8 ? ? ? ? 8B 0D ? ? ? ? 48 8B 05 ? ? ? ? 03 CB", 2));
+	return hook::get_call(hook::get_pattern("40 38 7B 0C 0F 84 ? ? ? ? 33 C9 E8", 12));
 });
 
 static hook::cdecl_stub<void(void*, uint32_t, int)> g_requestObject([]()
@@ -61,7 +61,7 @@ static hook::cdecl_stub<bool(streaming::Manager*, uint32_t, int)> _isReadyToDele
 
 static hook::cdecl_stub<void(streaming::Manager*, atArray<uint32_t>&, uint32_t)> _getDependents([]()
 {
-	return hook::get_pattern("4C 8B F9 0F 86 ? ? ? ? 44 8D 63 01 41 BD", -0x28);
+	return hook::get_call(hook::get_pattern("44 8B C3 4D 89 7B D8 45 89 7B E0 E8", 11));
 });
 
 size_t StreamingDataEntry::ComputePhysicalSize(uint32_t strIndex)

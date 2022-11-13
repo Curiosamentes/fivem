@@ -10,6 +10,8 @@
 
 #ifdef GTA_FIVE
 #define GAME_BUILDS \
+	(2699) \
+	(2612) \
 	(2545) \
 	(2372) \
 	(2189) \
@@ -18,6 +20,7 @@
 	(1604)
 #elif defined(IS_RDR3)
 #define GAME_BUILDS \
+	(1491) \
 	(1436) \
 	(1355) \
 	(1311)

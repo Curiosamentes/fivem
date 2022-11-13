@@ -192,12 +192,6 @@ void ScriptTraceV(const char* string, fmt::printf_args formatList)
 	LuaScriptRuntime::GetCurrent()->GetScriptHost()->ScriptTrace(const_cast<char*>(t.c_str()));
 }
 
-template<typename... TArgs>
-void ScriptTrace(const char* string, const TArgs&... args)
-{
-	ScriptTraceV(string, fmt::make_printf_args(args...));
-}
-
 static int Lua_Print(lua_State* L)
 {
 	const int n = lua_gettop(L); /* number of arguments */
@@ -597,7 +591,7 @@ static int Lua_InvokeFunctionReference(lua_State* L)
 {
 	// get required entries
 	auto& luaRuntime = LuaScriptRuntime::GetCurrent();
-	auto scriptHost = luaRuntime->GetScriptHost();
+	fx::OMPtr scriptHost = luaRuntime->GetScriptHost();
 	LuaProfilerScope _profile(luaRuntime.GetRef(), false);
 
 	// variables to hold state
@@ -1097,9 +1091,7 @@ static int Lua_CreateThreadInternal(lua_State* L, bool now, int timeout, int fun
 
 	if (!now)
 	{
-		auto sh = luaRuntime->GetScriptHostWithBookmarks();
-		sh->ScheduleBookmark(luaRuntime.GetRef(), ref, -timeout);
-
+		luaRuntime->ScheduleBookmarkSoon(ref, -timeout);
 		return 0;
 	}
 	else
@@ -1205,6 +1197,7 @@ public:
 
 	LUA_INLINE ~LuaPushEnvironment()
 	{
+		g_currentLuaRuntime->SchedulePendingBookmarks();
 		g_currentLuaRuntime = m_lastLuaRuntime;
 	}
 };
@@ -1232,6 +1225,24 @@ const OMPtr<LuaScriptRuntime>& LuaScriptRuntime::GetCurrent()
 IScriptHost* LuaScriptRuntime::GetLastHost()
 {
 	return g_lastScriptHost;
+}
+
+void LuaScriptRuntime::ScheduleBookmarkSoon(uint64_t bookmark, int timeout)
+{
+	m_pendingBookmarks.emplace_back(bookmark, timeout);
+}
+
+void LuaScriptRuntime::SchedulePendingBookmarks()
+{
+	if (!m_pendingBookmarks.empty())
+	{
+		for (auto [ref, timeout] : m_pendingBookmarks)
+		{
+			GetScriptHostWithBookmarks()->ScheduleBookmark(this, ref, timeout);
+		}
+
+		m_pendingBookmarks.clear();
+	}
 }
 
 void LuaScriptRuntime::SetTickRoutine(const std::function<void(uint64_t, bool)>& tickRoutine)
@@ -1446,6 +1457,21 @@ result_t LuaScriptRuntime::LoadFileInternal(OMPtr<fxIStream> stream, char* scrip
 	if (FX_FAILED(hr = stream->Read(&fileData[0], length, nullptr)))
 	{
 		return hr;
+	}
+
+	std::string_view fn = scriptFile;
+	if (fn.length() > 1 && fn[0] == '@' && fn.find_first_of('/') != std::string::npos)
+	{
+		std::string_view resName = fn.substr(1, fn.find_first_of('/') - 1);
+		fn = fn.substr(1 + resName.length() + 1);
+
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto resource = resourceManager->GetResource(std::string(resName));
+
+		if (resource.GetRef())
+		{
+			resource->OnBeforeLoadScript(&fileData);
+		}
 	}
 
 	fx::Resource* resource = reinterpret_cast<fx::Resource*>(GetParentObject());

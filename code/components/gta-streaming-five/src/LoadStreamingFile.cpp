@@ -725,19 +725,23 @@ static std::vector<std::string> g_gtxdFiles;
 static std::vector<std::pair<std::string, std::string>> g_dataFiles;
 static std::vector<std::pair<std::string, std::string>> g_loadedDataFiles;
 
-struct DataFileEntry
+class CDataFileMgr
 {
-	char name[128];
-	char pad[16]; // 128
-	int32_t type; // 140
-	int32_t index; // 148
-	bool locked; // 152
-	bool flag2; // 153
-	bool flag3; // 154
-	bool disabled; // 155
-	bool persistent; // 156
-	bool overlay;
-	char pad2[10];
+public:
+	struct DataFile
+	{
+		char name[128];
+		char pad[16]; // 128
+		int32_t type; // 140
+		int32_t index; // 148
+		bool locked; // 152
+		bool flag2; // 153
+		bool flag3; // 154
+		bool disabled; // 155
+		bool persistent; // 156
+		bool overlay;
+		char pad2[10];
+	};
 };
 
 static void* g_dataFileMgr;
@@ -902,20 +906,20 @@ class CDataFileMountInterface
 public:
 	virtual ~CDataFileMountInterface() = default;
 
-	virtual bool MountFile(DataFileEntry* entry) = 0;
+	virtual bool LoadDataFile(CDataFileMgr::DataFile* entry) = 0;
 
-	virtual bool UnmountFile(DataFileEntry* entry) = 0;
+	virtual void UnloadDataFile(CDataFileMgr::DataFile* entry) = 0;
 };
 
 class CfxPackfileMounter : public CDataFileMountInterface
 {
 public:
-	virtual bool MountFile(DataFileEntry* entry) override;
+	virtual bool LoadDataFile(CDataFileMgr::DataFile* entry) override;
 
-	virtual bool UnmountFile(DataFileEntry* entry) override;
+	virtual void UnloadDataFile(CDataFileMgr::DataFile* entry) override;
 };
 
-static hook::cdecl_stub<void(DataFileEntry* entry)> _addPackfile([]()
+static hook::cdecl_stub<void(CDataFileMgr::DataFile* entry)> _addPackfile([]()
 {
 #ifdef GTA_FIVE
 	return hook::get_call(hook::get_pattern("EB 15 48 8B 0B 40 38 7B 0C 74 07 E8", 11));
@@ -924,7 +928,7 @@ static hook::cdecl_stub<void(DataFileEntry* entry)> _addPackfile([]()
 #endif
 });
 
-static hook::cdecl_stub<void(DataFileEntry* entry)> _removePackfile([]()
+static hook::cdecl_stub<void(CDataFileMgr::DataFile* entry)> _removePackfile([]()
 {
 #ifdef GTA_FIVE
 	return hook::get_call(hook::get_pattern("EB 15 48 8B 0B 40 38 7B 0C 74 07 E8", 18));
@@ -947,7 +951,7 @@ static hook::cdecl_stub<void(void*)> _loadManifestChunk([]()
 #ifdef GTA_FIVE
 	return hook::get_call(hook::get_pattern("45 38 AE C0 00 00 00 0F 95 C3 E8", -5));
 #elif IS_RDR3
-	return hook::get_call(hook::get_pattern("41 8B 06 48 8D 95 B8 02 00 00 48", 23));
+	return hook::get_call(hook::get_pattern("48 8D 95 B8 02 00 00 48 8D 0D", 20));
 #endif
 });
 
@@ -956,13 +960,13 @@ static hook::cdecl_stub<void(void*)> _clearManifestChunk([]()
 #ifdef GTA_FIVE
 	return hook::get_pattern("33 FF 48 8D 4B 10 B2 01", -0x15);
 #elif IS_RDR3
-	return hook::get_call(hook::get_pattern("F6 44 24 70 04 74 ? 80 3D ? ? ? ? 00 74", 35));
+	return hook::get_call(hook::get_pattern("33 C9 E8 ? ? ? ? 48 8D 55 10 89 45 10 48", 33));
 #endif
 });
 
 static void* manifestChunkPtr;
 
-bool CfxPackfileMounter::MountFile(DataFileEntry* entry)
+bool CfxPackfileMounter::LoadDataFile(CDataFileMgr::DataFile* entry)
 {
 	entry->disabled = true;
 	//entry->persistent = true;
@@ -975,10 +979,9 @@ bool CfxPackfileMounter::MountFile(DataFileEntry* entry)
 	return true;
 }
 
-bool CfxPackfileMounter::UnmountFile(DataFileEntry* entry)
+void CfxPackfileMounter::UnloadDataFile(CDataFileMgr::DataFile* entry)
 {
 	_removePackfile(entry);
-	return true;
 }
 
 static void** g_extraContentManager;
@@ -1161,7 +1164,7 @@ static void ReloadMapStore()
 
 #ifdef GTA_FIVE
 	// needs verification for newer builds
-	if (!xbr::IsGameBuildOrGreater<2545 + 1>())
+	if (!xbr::IsGameBuildOrGreater<2699 + 1>())
 	{
 		ReloadMapStoreNative();
 	}
@@ -1199,12 +1202,12 @@ static void ReloadMapStore()
 	{
 		auto mounter = LookupDataFileMounter("GTXD_PARENTING_DATA");
 
-		DataFileEntry ventry;
+		CDataFileMgr::DataFile ventry;
 		memset(&ventry, 0, sizeof(ventry));
 		strcpy(ventry.name, file.c_str()); // muahaha
 		ventry.type = LookupDataFileType("GTXD_PARENTING_DATA");
 
-		mounter->MountFile(&ventry);
+		mounter->LoadDataFile(&ventry);
 
 		trace("Mounted gtxd parenting data %s\n", file);
 	}
@@ -1216,7 +1219,7 @@ static void ReloadMapStore()
 class CfxPseudoMounter : public CDataFileMountInterface
 {
 public:
-	virtual bool MountFile(DataFileEntry* entry) override
+	virtual bool LoadDataFile(CDataFileMgr::DataFile* entry) override
 	{
 		if (strcmp(entry->name, "RELOAD_MAP_STORE") == 0)
 		{
@@ -1228,16 +1231,13 @@ public:
 		return false;
 	}
 
-	virtual bool UnmountFile(DataFileEntry* entry) override
+	virtual void UnloadDataFile(CDataFileMgr::DataFile* entry) override
 	{
 		if (strcmp(entry->name, "RELOAD_MAP_STORE") == 0)
 		{
 			// empty?
 			loadedCollisions.clear();
 		}
-
-
-		return true;
 	}
 };
 
@@ -1251,7 +1251,7 @@ void LoadManifest(const char* tagName);
 class CfxCacheMounter : public CDataFileMountInterface
 {
 public:
-	virtual bool MountFile(DataFileEntry* entry) override
+	virtual bool LoadDataFile(CDataFileMgr::DataFile* entry) override
 	{
 		LoadManifest(entry->name);
 #ifdef GTA_FIVE
@@ -1261,9 +1261,8 @@ public:
 		return true;
 	}
 
-	virtual bool UnmountFile(DataFileEntry* entry) override
+	virtual void UnloadDataFile(CDataFileMgr::DataFile* entry) override
 	{
-		return true;
 	}
 };
 
@@ -1277,7 +1276,11 @@ struct IgnoreCaseLess
 	}
 };
 
-static CDataFileMountInterface** g_dataFileMounters;
+class CDataFileMount
+{
+public:
+	static inline CDataFileMountInterface** sm_Interfaces;
+};
 
 #ifdef GTA_FIVE
 // TODO: this might need to be a ref counter instead?
@@ -1287,7 +1290,7 @@ static std::map<uint32_t, std::string> g_itypHashList;
 class CfxProxyItypMounter : public CDataFileMountInterface
 {
 private:
-	std::string ParseBaseName(DataFileEntry* entry)
+	std::string ParseBaseName(CDataFileMgr::DataFile* entry)
 	{
 		char baseName[256];
 		char* sp = strrchr(entry->name, '/');
@@ -1304,7 +1307,7 @@ private:
 	}
 
 public:
-	virtual bool MountFile(DataFileEntry* entry) override
+	virtual bool LoadDataFile(CDataFileMgr::DataFile* entry) override
 	{
 		// parse dir/dir/blah.ityp into blah
 		std::string baseName = ParseBaseName(entry);
@@ -1336,15 +1339,13 @@ public:
 			}
 		}
 
-		g_dataFileMounters[174]->MountFile(entry);
+		CDataFileMount::sm_Interfaces[174]->LoadDataFile(entry);
 
 		return true;
 	}
 
-	virtual bool UnmountFile(DataFileEntry* entry) override
+	virtual void UnloadDataFile(CDataFileMgr::DataFile* entry) override
 	{
-		g_dataFileMounters[174]->UnmountFile(entry);
-
 		std::string baseName = ParseBaseName(entry);
 
 		uint32_t slotId;
@@ -1370,7 +1371,7 @@ public:
 			}
 		}
 
-		return true;
+		CDataFileMount::sm_Interfaces[174]->UnloadDataFile(entry);
 	}
 };
 
@@ -1405,14 +1406,14 @@ static atArray<ProxyFile>* g_interiorProxyArray;
 class CfxProxyInteriorOrderMounter : public CDataFileMountInterface
 {
 public:
-	virtual bool MountFile(DataFileEntry* entry) override
+	virtual bool LoadDataFile(CDataFileMgr::DataFile* entry) override
 	{
-		g_dataFileMounters[173]->MountFile(entry);
+		CDataFileMount::sm_Interfaces[173]->LoadDataFile(entry);
 
 		return true;
 	}
 
-	virtual bool UnmountFile(DataFileEntry* entry) override
+	virtual void UnloadDataFile(CDataFileMgr::DataFile* entry) override
 	{
 		uint32_t entryHash = HashString(entry->name);
 
@@ -1459,12 +1460,15 @@ public:
 				}
 			}
 		}
-
-		return true;
 	}
 };
 
 static CfxProxyInteriorOrderMounter g_proxyInteriorOrderMounter;
+
+static hook::cdecl_stub<void()> _initVehiclePaintRamps([]()
+{
+	return xbr::IsGameBuildOrGreater<2545>() ? hook::get_pattern("83 F9 FF 74 52", -0x34) : nullptr;
+});
 #endif
 
 static CDataFileMountInterface* LookupDataFileMounter(const std::string& type)
@@ -1509,12 +1513,12 @@ static CDataFileMountInterface* LookupDataFileMounter(const std::string& type)
 	}
 #endif
 
-	return g_dataFileMounters[fileType];
+	return CDataFileMount::sm_Interfaces[fileType];
 }
 
 static void LoadDataFiles();
 
-static void HandleDataFile(const std::pair<std::string, std::string>& dataFile, const std::function<bool(CDataFileMountInterface*, DataFileEntry& entry)>& fn, const char* op)
+static void HandleDataFile(const std::pair<std::string, std::string>& dataFile, const std::function<bool(CDataFileMountInterface*, CDataFileMgr::DataFile& entry)>& fn, const char* op)
 {
 	std::string typeName;
 	std::string fileName;
@@ -1539,9 +1543,9 @@ static void HandleDataFile(const std::pair<std::string, std::string>& dataFile, 
 		std::string className = std::to_string((uint64_t)mounter);
 #endif
 
-		DataFileEntry entry;
+		CDataFileMgr::DataFile entry;
 		memset(&entry, 0, sizeof(entry));
-		strcpy(entry.name, fileName.c_str()); // muahaha
+		strcpy_s(entry.name, fileName.c_str());
 		entry.type = LookupDataFileType(typeName);
 
 		bool result = SafeCall([&]()
@@ -1600,7 +1604,7 @@ enum class LoadType
 
 void LoadStreamingFiles(LoadType loadType = LoadType::AfterSession);
 
-static LONG FilterUnmountOperation(DataFileEntry& entry)
+static LONG FilterUnmountOperation(CDataFileMgr::DataFile& entry)
 {
 #ifdef GTA_FIVE
 	if (entry.type == 174) // DLC_ITYP_REQUEST
@@ -1650,28 +1654,30 @@ namespace streaming
 	{
 		auto dataFilePair = std::make_pair(type, path);
 
-		std::remove(g_dataFiles.begin(), g_dataFiles.end(), dataFilePair);
+		g_dataFiles.erase(std::remove(g_dataFiles.begin(), g_dataFiles.end(), dataFilePair), g_dataFiles.end());
 
 		if (std::find(g_loadedDataFiles.begin(), g_loadedDataFiles.end(), dataFilePair) == g_loadedDataFiles.end())
 		{
 			return;
 		}
 
-		std::remove(g_loadedDataFiles.begin(), g_loadedDataFiles.end(), dataFilePair);
+		g_loadedDataFiles.erase(std::remove(g_loadedDataFiles.begin(), g_loadedDataFiles.end(), dataFilePair), g_loadedDataFiles.end());
 
 		if (Instance<ICoreGameInit>::Get()->GetGameLoaded())
 		{
 			auto singlePair = { dataFilePair };
 
-			HandleDataFileList(singlePair, [](CDataFileMountInterface* mounter, DataFileEntry& entry)
+			HandleDataFileList(singlePair, [](CDataFileMountInterface* mounter, CDataFileMgr::DataFile& entry)
 			{
 				__try
 				{
-					return mounter->UnmountFile(&entry);
+					mounter->UnloadDataFile(&entry);
+
+					return true;
 				}
 				__except (FilterUnmountOperation(entry))
 				{
-
+					return false;
 				}
 			}, "removing");
 		}
@@ -2261,10 +2267,10 @@ void LoadManifest(const char* tagName)
 
 				auto mounter = LookupDataFileMounter("DLC_ITYP_REQUEST");
 
-				DataFileEntry entry = { 0 };
+				CDataFileMgr::DataFile entry = { 0 };
 				strcpy_s(entry.name, name.c_str());
 
-				mounter->UnmountFile(&entry);
+				mounter->UnloadDataFile(&entry);
 			}
 		}
 
@@ -2362,13 +2368,13 @@ static void LoadDataFiles()
 	OnLookAliveFrame();
 #endif
 
-	HandleDataFileList(g_dataFiles, [](CDataFileMountInterface* mounter, DataFileEntry& entry)
+	HandleDataFileList(g_dataFiles, [](CDataFileMountInterface* mounter, CDataFileMgr::DataFile& entry)
 	{
 #if __has_include(<StatusText.h>)
 		OnLookAliveFrame();
 #endif
 
-		return mounter->MountFile(&entry);
+		return mounter->LoadDataFile(&entry);
 	});
 
 	g_loadedDataFiles.insert(g_loadedDataFiles.end(), g_dataFiles.begin(), g_dataFiles.end());
@@ -2400,9 +2406,9 @@ DLL_EXPORT void ForceMountDataFile(const std::pair<std::string, std::string>& da
 {
 	std::vector<std::pair<std::string, std::string>> dataFiles = { dataFile };
 
-	HandleDataFileList(dataFiles, [](CDataFileMountInterface* mounter, DataFileEntry& entry)
+	HandleDataFileList(dataFiles, [](CDataFileMountInterface* mounter, CDataFileMgr::DataFile& entry)
 	{
-		return mounter->MountFile(&entry);
+		return mounter->LoadDataFile(&entry);
 	});
 }
 
@@ -2438,7 +2444,14 @@ void DLL_EXPORT CfxCollection_SetStreamingLoadLocked(bool locked)
 
 void DLL_EXPORT CfxCollection_AddStreamingFileByTag(const std::string& tag, const std::string& fileName, rage::ResourceFlags flags)
 {
-	auto baseName = std::string(strrchr(fileName.c_str(), '/') + 1);
+	size_t start = 0;
+
+	if (auto it = fileName.find_last_of('/'); it != std::string::npos)
+	{
+		start = it + 1;
+	}
+
+	auto baseName = GetBaseName(fileName.substr(start));
 
 	if (baseName.find(".ymf") == baseName.length() - 4)
 	{
@@ -2479,10 +2492,17 @@ void DLL_EXPORT CfxCollection_RemoveStreamingTag(const std::string& tag)
 	// #FIXME: should we not always be on the main thread?!
 	rage::sysMemAllocator::UpdateAllocatorValue();
 
-	for (auto& file : g_customStreamingFilesByTag[tag])
+	for (const auto& file : g_customStreamingFilesByTag[tag])
 	{
 		// get basename ('thing.ytd') and asset name ('thing')
-		auto baseName = GetBaseName(std::string(strrchr(file.c_str(), '/') + 1));
+		size_t start = 0;
+
+		if (auto it = file.find_last_of('/'); it != std::string::npos)
+		{
+			start = it + 1;
+		}
+
+		auto baseName = GetBaseName(file.substr(start));
 		auto nameWithoutExt = baseName.substr(0, baseName.find_last_of('.'));
 
 		// get dot position and skip if no dot
@@ -2560,9 +2580,10 @@ static void UnloadDataFiles()
 		trace("Unloading data files (%d entries)\n", g_loadedDataFiles.size());
 
 		HandleDataFileList(g_loadedDataFiles,
-			[](CDataFileMountInterface* mounter, DataFileEntry& entry)
+			[](CDataFileMountInterface* mounter, CDataFileMgr::DataFile& entry)
 		{
-			return mounter->UnmountFile(&entry);
+			mounter->UnloadDataFile(&entry);
+			return true;
 		}, "unloading");
 
 		g_loadedDataFiles.clear();
@@ -2572,9 +2593,10 @@ static void UnloadDataFiles()
 #ifdef GTA_FIVE
 static void UnloadDataFilesOfTypes(const std::set<int>& types)
 {
-	HandleDataFileListWithTypes(g_loadedDataFiles, [](CDataFileMountInterface* mounter, DataFileEntry& entry)
+	HandleDataFileListWithTypes(g_loadedDataFiles, [](CDataFileMountInterface* mounter, CDataFileMgr::DataFile& entry)
 	{
-		return mounter->UnmountFile(&entry);
+		mounter->UnloadDataFile(&entry);
+		return true;
 	}, types, "pre-unloading");
 }
 
@@ -2587,10 +2609,11 @@ static hook::cdecl_stub<void()> _unloadMultiplayerContent([]()
 static const char* NormalizePath(char* out, const char* in, size_t length)
 {
 	strncpy(out, in, length);
+	out[length - 1] = '\0';
 
-	int l = strlen(out);
+	size_t l = strlen(out);
 
-	for (int i = 0; i < l; i++)
+	for (size_t i = 0; i < l; i++)
 	{
 		if (out[i] == '\\')
 		{
@@ -2723,7 +2746,7 @@ static hook::cdecl_stub<void()> _waitUntilStreamerClear([]()
 #ifdef GTA_FIVE
 	return hook::get_call(hook::get_pattern("80 A1 7A 01 00 00 FE 8B EA", 12));
 #elif IS_RDR3
-	return hook::get_call(hook::get_pattern("B1 01 E8 ? ? ? ? B9 FF FF 00 00 E8", -19));
+	return hook::get_call(hook::get_pattern("80 A3 ? ? ? ? FE 48 8D 0D ? ? ? ? BA FF FF 00 00", 24));
 #endif
 });
 
@@ -2732,7 +2755,7 @@ static hook::cdecl_stub<void(void*)> _resyncStreamers([]()
 #ifdef GTA_FIVE
 	return hook::get_call(hook::get_pattern("80 A1 7A 01 00 00 FE 8B EA", 24));
 #elif IS_RDR3
-	return hook::get_call(hook::get_pattern("B1 01 E8 ? ? ? ? B9 FF FF 00 00 E8", -24));
+	return hook::get_call(hook::get_pattern("80 A3 ? ? ? ? FE 48 8D 0D ? ? ? ? BA FF FF 00 00", 19));
 #endif
 });
 
@@ -2839,9 +2862,10 @@ static void ExecuteGroupForWeaponInfo(void* mgr, uint32_t hashValue, bool value)
 
 		if (fileType == "WEAPONINFO_FILE_PATCH" || fileType == "WEAPONINFO_FILE")
 		{
-			HandleDataFile(*it, [](CDataFileMountInterface* mounter, DataFileEntry& entry)
+			HandleDataFile(*it, [](CDataFileMountInterface* mounter, CDataFileMgr::DataFile& entry)
 			{
-				return mounter->UnmountFile(&entry);
+				mounter->UnloadDataFile(&entry);
+				return true;
 			}, "early-unloading for CWeaponMgr");
 
 			it = g_loadedDataFiles.erase(it);
@@ -3006,7 +3030,7 @@ static bool ret0()
 }
 
 #ifdef GTA_FIVE
-static void (*g_origLoadVehicleMeta)(DataFileEntry* entry, bool notMapTypes, uint32_t modelHash);
+static void (*g_origLoadVehicleMeta)(CDataFileMgr::DataFile* entry, bool notMapTypes, uint32_t modelHash);
 static void (*g_origAddArchetype)(fwArchetype*, uint32_t typesHash);
 
 static void GetTxdRelationships(std::map<int, int>& map)
@@ -3072,7 +3096,7 @@ static void calc_z(std::string& s, std::vector<int>& z)
 
 static std::unordered_set<uint32_t> g_hashes;
 
-static void LoadVehicleMetaForDlc(DataFileEntry* entry, bool notMapTypes, uint32_t modelHash)
+static void LoadVehicleMetaForDlc(CDataFileMgr::DataFile* entry, bool notMapTypes, uint32_t modelHash)
 {
 	// try logging any and all txdstore relationships we made, to find any differences
 	std::map<int, int> txdRelationships;
@@ -3150,9 +3174,9 @@ static void AddVehicleArchetype(fwArchetype* self, uint32_t typesHash)
 	g_origAddArchetype(self, typesHash);
 }
 
-static void (*g_origUnloadVehicleMeta)(DataFileEntry* entry);
+static void (*g_origUnloadVehicleMeta)(CDataFileMgr::DataFile* entry);
 
-static void UnloadVehicleMetaForDlc(DataFileEntry* entry)
+static void UnloadVehicleMetaForDlc(CDataFileMgr::DataFile* entry)
 {
 	auto hash = HashString(entry->name);
 	g_origUnloadVehicleMeta(entry);
@@ -3307,8 +3331,8 @@ static HookFunction hookFunction([]()
 	g_streamingInternals = hook::get_address<void*>(hook::get_pattern("80 A1 7A 01 00 00 FE 8B EA", 20));
 	manifestChunkPtr = hook::get_address<void*>(hook::get_pattern("C7 80 74 01 00 00 02 00 00 00 E8 ? ? ? ? 8B 06", -4));
 #elif IS_RDR3
-	g_streamingInternals = hook::get_address<void*>(hook::get_pattern("B1 01 E8 ? ? ? ? B9 FF FF 00 00 E8", -28));
-	manifestChunkPtr = hook::get_address<void*>(hook::get_pattern<char>("F6 44 24 70 04 74 ? 80 3D ? ? ? ? 00 74", 31));
+	g_streamingInternals = hook::get_address<void*>(hook::get_pattern("80 A3 ? ? ? ? FE 48 8D 0D ? ? ? ? BA FF FF 00 00", 10));
+	manifestChunkPtr = hook::get_address<void*>(hook::get_pattern<char>("33 C9 E8 ? ? ? ? 48 8D 55 10 89 45 10 48", 17));
 #endif
 
 	// level load
@@ -3562,7 +3586,7 @@ static HookFunction hookFunction([]()
 		char* location = hook::get_pattern<char>("8B 82 90 00 00 00 49 8B 8C C0 ? ? ? ? 48", 10);
 #endif
 
-		g_dataFileMounters = (decltype(g_dataFileMounters))(hook::get_adjusted(0x140000000) + *(int32_t*)location); // why is this an RVA?!
+		CDataFileMount::sm_Interfaces = (decltype(CDataFileMount::sm_Interfaces))(hook::get_adjusted(0x140000000) + *(int32_t*)location); // why is this an RVA?!
 	}
 
 	{
@@ -3611,6 +3635,13 @@ static HookFunction hookFunction([]()
 			LoadStreamingFiles(LoadType::AfterSessionEarlyStage);
 			LoadStreamingFiles(LoadType::AfterSession);
 			LoadDataFiles();
+
+#ifdef GTA_FIVE
+			if (xbr::IsGameBuildOrGreater<2545>())
+			{
+				_initVehiclePaintRamps();
+			}
+#endif
 		}
 	});
 
@@ -3706,7 +3737,7 @@ static HookFunction hookFunction([]()
 
 	// do not ever register our streaming files as part of DLC packfile dependencies
 	{
-		auto location = hook::get_pattern("48 8B CE C6 85 ? 00 00 00 01 89 44 24 20 E8", 14);
+		auto location = hook::get_pattern("48 8B CE C6 85 ? ? 00 00 01 89 44 24 20 E8", 14);
 		hook::set_call(&g_origAddMapBoolEntry, location);
 		hook::call(location, WrapAddMapBoolEntry);
 	}

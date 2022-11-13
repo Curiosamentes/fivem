@@ -26,6 +26,7 @@
 #include <ppltasks.h>
 
 #include <CrossBuildRuntime.h>
+#include <PureModeState.h>
 #include <CoreConsole.h>
 
 #include <CfxLocale.h>
@@ -370,11 +371,9 @@ void NetLibrary::ProcessOOB(const NetAddress& from, const char* oob, size_t leng
 #if defined(GTA_FIVE) || defined(GTA_NY)
 				SetWindowText(CoreGetGameWindow(), va(
 #ifdef GTA_FIVE
-					L"FiveM"
-#elif defined(IS_RDR3)
-					L"RedM"
+					L"FiveM® by Cfx.re"
 #elif defined(GTA_NY)
-					L"LibertyM"
+					L"LibertyM™ by Cfx.re"
 #endif
 					L" - %s", ToWide(cleaned)));
 #endif
@@ -438,6 +437,11 @@ void NetLibrary::ProcessOOB(const NetAddress& from, const char* oob, size_t leng
 		}
 		else if (!_strnicmp(oob, "error", 5))
 		{
+			if (m_disconnecting)
+			{
+				return;
+			}
+
 			if (from != m_currentServer)
 			{
 				trace("Received 'error' request was not from the host\n");
@@ -533,17 +537,17 @@ RoutingPacket::RoutingPacket()
 
 void NetLibrary::SendReliableCommand(const char* type, const char* buffer, size_t length)
 {
-	if (m_impl)
+	if (auto impl = GetImpl())
 	{
-		m_impl->SendReliableCommand(HashRageString(type), buffer, length);
+		impl->SendReliableCommand(HashRageString(type), buffer, length);
 	}
 }
 
 void NetLibrary::SendUnreliableCommand(const char* type, const char* buffer, size_t length)
 {
-	if (m_impl)
+	if (auto impl = GetImpl())
 	{
-		m_impl->SendUnreliableCommand(HashRageString(type), buffer, length);
+		impl->SendUnreliableCommand(HashRageString(type), buffer, length);
 	}
 }
 
@@ -587,9 +591,9 @@ void NetLibrary::RunFrame()
 		m_lastConnectionState = m_connectionState;
 	}
 
-	if (m_impl)
+	if (auto impl = GetImpl())
 	{
-		m_impl->RunFrame();
+		impl->RunFrame();
 	}
 
 	switch (m_connectionState)
@@ -639,9 +643,9 @@ void NetLibrary::RunFrame()
 			break;
 
 		case CS_CONNECTING:
-			if ((GetTickCount() - m_lastConnect) > 5000 && m_impl->IsDisconnected())
+			if ((GetTickCount() - m_lastConnect) > 5000 && GetImpl()->IsDisconnected())
 			{
-				m_impl->SendConnect(m_token, fmt::sprintf("token=%s&guid=%llu", m_token, (uint64_t)GetGUID()));
+				GetImpl()->SendConnect(m_token, fmt::sprintf("token=%s&guid=%llu", m_token, (uint64_t)GetGUID()));
 
 				m_lastConnect = GetTickCount();
 
@@ -665,7 +669,7 @@ void NetLibrary::RunFrame()
 			break;
 
 		case CS_ACTIVE:
-			if (m_impl->HasTimedOut())
+			if (GetImpl()->HasTimedOut())
 			{
 				g_disconnectReason = "Connection timed out.";
 
@@ -843,6 +847,8 @@ int g_serverVersion;
 
 concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 {
+	m_disconnecting = false;
+
 	std::string ruRef = rootUrl;
 
 	// increment the GUID so servers won't race to remove us
@@ -914,9 +920,9 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 
 	AddCrashometry("last_server_url", "%s", url);
 
-	if (m_impl)
+	if (auto impl = GetImpl())
 	{
-		m_impl->Reset();
+		impl->Reset();
 	}
 
 	m_outSequence = 0;
@@ -1572,6 +1578,7 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 
 						if (node.value("netlibVersion", 1) == 2)
 						{
+							std::unique_lock _(m_implMutex);
 							m_impl = CreateNetLibraryImplV2(this);
 						}
 						else if (node.value("netlibVersion", 1) == 3 || node.value("netlibVersion", 1) == 4)
@@ -1666,11 +1673,13 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 		}), handleCardResult);
 	};
 
+	static std::string requestSteamTicket = "on";
+
 	continueRequest = [=]()
 	{
 		auto steamComponent = GetSteam();
 
-		if (steamComponent)
+		if (steamComponent && requestSteamTicket == "on")
 		{
 			static uint32_t ticketLength;
 			static uint8_t ticketBuffer[4096];
@@ -1777,6 +1786,13 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 #if defined(GTA_FIVE) || defined(IS_RDR3)
 				if (info.is_object() && info["vars"].is_object())
 				{
+					int pureLevel = 0;
+
+					if (auto pureVal = info["vars"].value("sv_pureLevel", "0"); !pureVal.empty())
+					{
+						pureLevel = std::stoi(pureVal);
+					}
+
 					auto val = info["vars"].value("sv_enforceGameBuild", "");
 					int buildRef = 0;
 
@@ -1784,12 +1800,12 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 					{
 						buildRef = std::stoi(val);
 
-						if (buildRef != 0 && buildRef != xbr::GetGameBuild())
+						if ((buildRef != 0 && buildRef != xbr::GetGameBuild()) || (pureLevel != fx::client::GetPureLevel()))
 						{
 #if defined(GTA_FIVE)
-							if (buildRef != 1604 && buildRef != 2060 && buildRef != 2189 && buildRef != 2372 && buildRef != 2545)
+							if (buildRef != 1604 && buildRef != 2060 && buildRef != 2189 && buildRef != 2372 && buildRef != 2545 && buildRef != 2612 && buildRef != 2699)
 #else
-							if (buildRef != 1311 && buildRef != 1355 && buildRef != 1436)
+							if (buildRef != 1311 && buildRef != 1355 && buildRef != 1436 && buildRef != 1491)
 #endif
 							{
 								OnConnectionError(va("Server specified an invalid game build enforcement (%d).", buildRef), json::object({
@@ -1801,7 +1817,7 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 								return;
 							}
 
-							OnRequestBuildSwitch(buildRef);
+							OnRequestBuildSwitch(buildRef, pureLevel);
 							m_connectionState = CS_IDLE;
 							return;
 						}
@@ -1810,7 +1826,7 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 #if defined(GTA_FIVE)
 					if (xbr::GetGameBuild() != 1604 && buildRef == 0)
 					{
-						OnRequestBuildSwitch(1604);
+						OnRequestBuildSwitch(1604, 0);
 						m_connectionState = CS_IDLE;
 						return;
 					}
@@ -1822,6 +1838,8 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 					{
 						licenseKeyToken = ival;
 					}
+
+					requestSteamTicket = info.value("requestSteamTicket", "on");
 				}
 #endif
 			}
@@ -1899,16 +1917,18 @@ void NetLibrary::Disconnect(const char* reason)
 
 	if (m_connectionState == CS_CONNECTING || m_connectionState == CS_ACTIVE || m_connectionState == CS_FETCHING)
 	{
+		m_disconnecting = true;
+
 		SendReliableCommand("msgIQuit", g_disconnectReason.c_str(), g_disconnectReason.length() + 1);
 
-		if (m_impl)
+		if (auto impl = GetImpl())
 		{
-			m_impl->Flush();
+			impl->Flush();
 
 			// this is *somewhat* needed to ensure the server gets our msgIQuit first
-			Sleep(std::min(750, m_impl->GetPing() + abs(m_impl->GetVariance())));
+			Sleep(std::min(750, impl->GetPing() + abs(impl->GetVariance())));
 
-			m_impl->Reset();
+			impl->Reset();
 		}
 
 		OnFinalizeDisconnect(m_currentServer);
@@ -1957,7 +1977,7 @@ void NetLibrary::SendOutOfBand(const NetAddress& address, const char* format, ..
 
 bool NetLibrary::IsPendingInGameReconnect()
 {
-	return (m_connectionState == CS_ACTIVE && m_impl->IsDisconnected());
+	return (m_connectionState == CS_ACTIVE && GetImpl()->IsDisconnected());
 }
 
 static std::string g_steamPersonaName;
@@ -2011,7 +2031,7 @@ void NetLibrary::SetPlayerName(const char* name)
 
 void NetLibrary::SendData(const NetAddress& address, const char* data, size_t length)
 {
-	m_impl->SendData(address, data, length);
+	GetImpl()->SendData(address, data, length);
 }
 
 void NetLibrary::AddReliableHandler(const char* type, const ReliableHandlerType& function, bool runOnMainThreadOnly /* = false */)
@@ -2137,9 +2157,9 @@ NetLibrary* NetLibrary::Create()
 
 int32_t NetLibrary::GetPing()
 {
-	if (m_impl)
+	if (auto impl = GetImpl())
 	{
-		return m_impl->GetPing();
+		return impl->GetPing();
 	}
 
 	return -1;
@@ -2147,9 +2167,9 @@ int32_t NetLibrary::GetPing()
 
 int32_t NetLibrary::GetVariance()
 {
-	if (m_impl)
+	if (auto impl = GetImpl())
 	{
-		return m_impl->GetVariance();
+		return impl->GetVariance();
 	}
 
 	return -1;

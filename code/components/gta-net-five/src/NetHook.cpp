@@ -129,6 +129,7 @@ int __stdcall CfxBind(SOCKET s, sockaddr * addr, int addrlen)
 			addrIn->sin_port = htons(6673);
 		}
 
+		addrIn->sin_addr.s_addr = inet_addr("127.0.0.1");
 		g_gameSocket = s;
 	}
 
@@ -284,6 +285,11 @@ static hook::cdecl_stub<void()> doPresenceStuff([] ()
 
 static hook::cdecl_stub<void(void*, /*ScSessionAddr**/ void*, int64_t, int, void*, int)> joinGame([] ()
 {
+	if (xbr::IsGameBuildOrGreater<2699>())
+	{
+		return hook::pattern("BF 01 00 00 00 45 8B F1 45 8B F8 4C 8B E2").count(1).get(0).get<void>(-0x26);
+	}
+
 	return hook::pattern("F6 81 ? ? 00 00 01 45 8B F1 45 8B ? 4C 8B").count(1).get(0).get<void>(-0x24);
 });
 
@@ -323,6 +329,17 @@ static hook::cdecl_stub<void(int, int, int)> hostGame([] () -> void*
 	{
 		return (void*)hook::get_adjusted(0x14106FF30);
 	}
+	
+	if (xbr::IsGameBuild<2612>())
+	{
+		return (void*)hook::get_adjusted(0x141071468);
+	}
+
+	if (xbr::IsGameBuild<2699>())
+	{
+		return (void*)hook::get_adjusted(0x14107AE54);
+	}
+
 	// 1737
 	//return (void*)0x141029A20;
 
@@ -755,12 +772,6 @@ static InitFunction hsInitFunction([]()
 
 static uint16_t* g_dlcMountCount;
 
-static void SendMetric(const std::string& metric)
-{
-}
-
-static std::string g_globalServerAddress;
-
 void Policy_BindNetLibrary(NetLibrary*);
 void MumbleVoice_BindNetLibrary(NetLibrary*);
 void ObjectIds_BindNetLibrary(NetLibrary*);
@@ -769,7 +780,7 @@ void ObjectIds_BindNetLibrary(NetLibrary*);
 
 static hook::cdecl_stub<void(void* /* rlGamerInfo */)> _setGameGamerInfo([]()
 {
-	return hook::get_pattern("3A D8 0F 95 C3 40 0A DE 40", -0x53);
+	return hook::get_pattern("3A D8 0F 95 C3 40 0A DE 40", (xbr::IsGameBuildOrGreater<2699>()) ? -0x56 : -0x53);
 });
 
 template<int Build>
@@ -827,28 +838,35 @@ static HookFunction initFunction([]()
 
 	g_netLibrary->OnConnectOKReceived.Connect([] (NetAddress addr)
 	{
-		g_globalServerAddress = va("%s:%d", addr.GetAddress().c_str(), addr.GetPort());
-
 		doTickNextFrame = true;
 	});
 
+	// host state sending
 	g_netLibrary->OnBuildMessage.Connect([] (const std::function<void(uint32_t, const char*, int)>& writeReliable)
 	{
+		ICoreGameInit* cgi = Instance<ICoreGameInit>::Get();
+
+		if (cgi->OneSyncEnabled)
+		{
+			return;
+		}
+
 		static bool lastHostState;
 
-		// hostie
+		// send whether or not we consider ourselves to be host
 		bool isHost = isNetworkHost();
 		if (isHost != lastHostState)
 		{
 			if (isHost)
 			{
 				auto base = g_netLibrary->GetServerBase();
-				writeReliable(0xB3EA30DE, (char*)&base, sizeof(base));
+				writeReliable(HashRageString("msgIHost"), (char*)&base, sizeof(base));
 			}
 
 			lastHostState = isHost;
 		}
 
+		// ensure we send this frequently enough
 		static uint32_t lastHostSend = timeGetTime();
 
 		if ((timeGetTime() - lastHostSend) > 1500)
@@ -899,6 +917,12 @@ static HookFunction initFunction([]()
 
 	g_netLibrary->SetBase(GetTickCount());
 
+	if (xbr::IsGameBuildOrGreater<2699>())
+	{
+		static uintptr_t gamerInfoPtr = hook::get_address<uintptr_t>((char*)hook::get_call(hook::get_pattern("48 8B E8 48 85 C0 74 11 E8", 8)) + 3);
+		g_gamerInfo<2372> = (decltype(g_gamerInfo<2372>))(&gamerInfoPtr);
+	}
+	else
 	{
 		auto location = hook::get_pattern("FF C8 0F 85 AC 00 00 00 48 39 35", 11);
 
@@ -943,23 +967,6 @@ static HookFunction initFunction([]()
 	{
 		g_netLibrary->RunMainFrame();
 
-		static bool sentLog = false;
-
-		if (isSessionStarted())
-		{
-			if (!sentLog)
-			{
-				SendMetric("nethook:info:started");
-
-				sentLog = true;
-			}
-		}
-		else
-		{
-			sentLog = false;
-		}
-
-		// TODO: replace this so that reloading can work correctly
 		static bool gameLoaded = false;
 		static bool eventConnected = false;
 
@@ -1093,15 +1100,6 @@ static bool GetLocalPeerId(netPeerId* id)
 static bool GetLocalPeerId2(netPeerId* id)
 {
 	id->val = (g_netLibrary->GetServerBase() | ((uint64_t)g_netLibrary->GetServerBase() << 32)) ^ 1;
-
-	return true;
-}
-
-static bool GetGamerHandle(int localPlayerIdx, rlGamerHandle* out)
-{
-	memset(out->handle, 0, sizeof(out->handle));
-	*(uint64_t*)&out->handle[0] = g_netLibrary->GetServerBase();
-	*(uint8_t*)&out->handle[8] = 3;
 
 	return true;
 }
@@ -1292,22 +1290,6 @@ void RunNetworkStuff()
 			entry.SetUnkTimeValue(&g_internalNet<1604>->unk_marker);
 		}
 	}
-
-	// handle recv triggering from NetRelay
-	/*{
-		while (g_netLibrary->WaitForRoutedPacket(0))
-		{
-			// hopefully these sizes are fine
-			char buffer[4096];
-			char buffer2[4096];
-
-			*(uint32_t*)&buffer[0] = -1;
-			*(uint32_t*)&buffer[4] = 0;
-
-			auto size = g_receivePacket(buffer, buffer2);
-			g_handlePacket(buffer, buffer2, size);
-		}
-	}*/
 }
 
 static std::string g_quitMsg;
@@ -1326,46 +1308,7 @@ static void(*_origLoadMeta)(const char*, bool, uint32_t);
 
 static void WaitForScAndLoadMeta(const char* fn, bool a2, uint32_t a3)
 {
-	while (_isScWaitingForInit())
-	{
-		if (xbr::IsGameBuildOrGreater<2545>())
-		{
-			((void (*)())hook::get_adjusted(0x140006A28))();
-			((void (*)())hook::get_adjusted(0x1407FB28C))();
-			((void (*)())hook::get_adjusted(0x1400275C8))();
-			((void (*)(void*))hook::get_adjusted(0x141612950))((void*)hook::get_adjusted(0x142E6F960));
-		}
-		else if (xbr::IsGameBuildOrGreater<2372>())
-		{
-			((void (*)())hook::get_adjusted(0x140006718))();
-			((void (*)())hook::get_adjusted(0x1407F6050))();
-			((void (*)())hook::get_adjusted(0x1400263CC))();
-			((void (*)(void*))hook::get_adjusted(0x14160104C))((void*)hook::get_adjusted(0x142E34900));
-		}
-		else if (!xbr::IsGameBuildOrGreater<2060>())
-		{
-			((void(*)())hook::get_adjusted(0x1400067E8))();
-			((void(*)())hook::get_adjusted(0x1407D1960))();
-			((void(*)())hook::get_adjusted(0x140025F7C))();
-			((void(*)(void*))hook::get_adjusted(0x141595FD4))((void*)hook::get_adjusted(0x142DC9BA0));
-		}
-		else if (xbr::IsGameBuildOrGreater<2189>())
-		{
-			((void (*)())hook::get_adjusted(0x140006748))();
-			((void (*)())hook::get_adjusted(0x1407F4150))();
-			((void (*)())hook::get_adjusted(0x140026120))();
-			((void (*)(void*))hook::get_adjusted(0x1415E4AC8))((void*)hook::get_adjusted(0x142E5C2D0));
-		}
-		else
-		{
-			((void (*)())hook::get_adjusted(0x140006A80))();
-			((void (*)())hook::get_adjusted(0x1407EB39C))();
-			((void (*)())hook::get_adjusted(0x1400263A4))();
-			((void (*)(void*))hook::get_adjusted(0x1415CF268))((void*)hook::get_adjusted(0x142D3DCC0));
-		}
-
-		Sleep(0);
-	}
+	WaitForRlInit();
 
 	return _origLoadMeta(fn, a2, a3);
 }
@@ -1430,6 +1373,16 @@ static void fwClipSetManager_StartNetworkSessionHook()
 	}
 }
 
+static void (*g_origPoliceScanner_Stop)(void*, int);
+
+static void PoliceScanner_StopWrap(void* self, int a2)
+{
+	if (!isSessionStarted())
+	{
+		g_origPoliceScanner_Stop(self, a2);
+	}
+}
+
 static HookFunction hookFunction([] ()
 {
 	MH_Initialize();
@@ -1444,7 +1397,7 @@ static HookFunction hookFunction([] ()
 	hook::call(hook::get_pattern("48 83 F8 04 75 ? 40 88", 6), ExitCleanly);
 
 	// no netgame jumpouts in alt-f4
-	hook::return_function(hook::get_call(hook::get_pattern("40 38 35 ? ? ? ? 74 0A 48 8B CF", 12)));
+	hook::put<uint8_t>(hook::get_pattern("40 38 35 ? ? ? ? 74 0A 48 8B CF", 7), 0xEB);
 
 	// fix 'restart' handling to not ask MTL to restart, but relaunch 'ourselves' (eg on settings change)
 	hook::put<uint8_t>(hook::get_pattern("48 85 C9 74 15 40 38 31 74", 3), 0xEB);
@@ -1517,67 +1470,52 @@ static HookFunction hookFunction([] ()
 	// we also need some pointers from this function
 	char* onlineAddressFunc;
 
-	if (!xbr::IsGameBuildOrGreater<2060>())
-	{
-		char* netAddressFunc = hook::pattern("89 79 10 48 89 39 48 89 79 08 89 69 14 66 89 79").count(1).get(0).get<char>(-0x23);
-		hook::jump(netAddressFunc, GetOurOnlineAddress);
-
-		// added in 393
-		//hook::jump(hook::get_call(netAddressFunc + 0x5D), HashSecKeyAddress);
-		//hook::jump(hook::get_call(netAddressFunc + 0x61), HashSecKeyAddress); // 505-1032
-		hook::jump(hook::get_call(netAddressFunc + 0x66), HashSecKeyAddress); // 1103
-
-		//char* onlineAddressFunc = hook::get_call(netAddressFunc + 0x75); // 350-
-		//char* onlineAddressFunc = hook::get_call(netAddressFunc + 0x78); // 372
-		//char* onlineAddressFunc = hook::get_call(netAddressFunc + 0x88); // 393
-		onlineAddressFunc = hook::get_call(netAddressFunc + 0x6B); // 505
-		// ^ 372 change, 393 change, 505 change
-
-		netAddressFunc += 0x1F;
-
-		bool* didNetAddressBool = (bool*)(netAddressFunc + *(int32_t*)netAddressFunc + 4);
-
-		*didNetAddressBool = true;
-
-		//netAddressFunc += 0x25;
-		//netAddressFunc += 0x28; // <- 372
-		//netAddressFunc += 0x37; // <- 393
-		netAddressFunc += 0x3B; // <- 505
-
-		g_globalNetSecurityKey = (uint64_t*)(netAddressFunc + *(int32_t*)netAddressFunc + 4);
-
-		hook::jump(fillOurSystemKey, GetOurSessionKeyWrap);
-	}
-	else if (xbr::IsGameBuildOrGreater<2372>())
+	// 2372-n (technically, 2245)
+	if (xbr::IsGameBuildOrGreater<2372>())
 	{
 		char* netAddressFunc = hook::get_pattern<char>("80 78 ? 02 48 8B D0 75", -0x32);
 		hook::jump(netAddressFunc, GetOurOnlineAddressNew);
 		g_peerId = hook::get_address<netPeerId*>(hook::get_call(netAddressFunc + 0x28) + 0x1C);
 		hook::jump(hook::get_call(netAddressFunc + 0x28), GetLocalPeerId);
-		//hook::jump(hook::get_call(netAddressFunc + 0xF1), GetGamerHandle);
 		hook::jump(hook::get_call(hook::get_call(netAddressFunc + 0x102) + 0x14), InitP2PCryptKey);
 
 		onlineAddressFunc = hook::get_call(netAddressFunc + 0x2D);
-		
-		char* netUnkFunc = hook::get_pattern<char>("48 8D 0D ? ? ? ? 48 8D 14 03");
-		bool* didNetAddressBool = hook::get_address<bool*>(netUnkFunc + 0x19);
+
+		char* rlCreateUUID = hook::get_pattern<char>("48 8D 0D ? ? ? ? 48 8D 14 03", -0x31);
+		bool* didNetAddressBool = hook::get_address<bool*>(rlCreateUUID + 0x48, 2, 7);
 		*didNetAddressBool = true;
 
 		hook::call(sessionKeyAddress, GetOurSessionKeyWrap);
 	}
-	else
+	// 2060-2215
+	else if (xbr::IsGameBuildOrGreater<2060>())
 	{
 		char* netAddressFunc = hook::get_pattern<char>("89 79 10 48 89 39 48 89 79 08 89 69 14 66 89 79", -0x22);
 		hook::jump(netAddressFunc, GetOurOnlineAddress);
 
 		hook::jump(hook::get_call(netAddressFunc + 0x6F), HashSecKeyAddress);
-
 		onlineAddressFunc = hook::get_call(netAddressFunc + 0x74);
 
 		bool* didNetAddressBool = hook::get_address<bool*>(netAddressFunc + 0x1E);
 		*didNetAddressBool = true;
 
 		g_globalNetSecurityKey = hook::get_address<uint64_t*>(netAddressFunc + 0x63);
+
+		hook::jump(fillOurSystemKey, GetOurSessionKeyWrap);
+	}
+	// 1604
+	else
+	{
+		char* netAddressFunc = hook::get_pattern<char>("89 79 10 48 89 39 48 89 79 08 89 69 14 66 89 79", -0x23);
+		hook::jump(netAddressFunc, GetOurOnlineAddress);
+
+		hook::jump(hook::get_call(netAddressFunc + 0x66), HashSecKeyAddress);
+		onlineAddressFunc = hook::get_call(netAddressFunc + 0x6B);
+
+		bool* didNetAddressBool = hook::get_address<bool*>(netAddressFunc + 0x1F);
+		*didNetAddressBool = true;
+
+		g_globalNetSecurityKey = hook::get_address<uint64_t*>(netAddressFunc + 0x5A);
 
 		hook::jump(fillOurSystemKey, GetOurSessionKeyWrap);
 	}
@@ -1589,7 +1527,11 @@ static HookFunction hookFunction([] ()
 	g_onlineAddress = (OnlineAddress*)(onlineAddressFunc + *(int32_t*)onlineAddressFunc + 4);
 
 	{
-		if (xbr::IsGameBuildOrGreater<2372>())
+		if (xbr::IsGameBuildOrGreater<2699>())
+		{
+			g_NetworkBail = hook::get_pattern("48 83 EC 70 80 3D ? ? ? ? 00 C6 05", -5);
+		}
+		else if (xbr::IsGameBuildOrGreater<2372>())
 		{
 			g_NetworkBail = hook::get_pattern("80 3D ? ? ? ? 00 8B 01 48 8B D9 89", -0xD);
 		}
@@ -1598,10 +1540,6 @@ static HookFunction hookFunction([] ()
 			g_NetworkBail = hook::get_pattern("41 8B F1 41 8B E8 8B FA 8B D9 74 26", -0x1B);
 		}
 	}
-
-	//uint64_t* addrThing = (uint64_t*)(netAddressFunc + *(int32_t*)netAddressFunc + 4);
-	//addrThing[0] = 1;
-	//addrThing[1] = 1;
 
 	// system key *local peer id*
 	if (!xbr::IsGameBuildOrGreater<2372>())
@@ -1612,10 +1550,6 @@ static HookFunction hookFunction([] ()
 	{
 		hook::jump(hook::pattern("48 83 F8 FF 75 17 48 8D 0D").count(1).get(0).get<void>(-32), GetLocalPeerId2);
 	}
-
-	// other system key thing
-	//hook::jump(hook::pattern("84 C0 74 0C 48 8B 44 24 38 48 89 03 B0").count(1).get(0).get<void>(-0x13), GetOurSystemKey);
-	// ^ handled by GetOurSessionKeyWrap now
 
 	// unknown obfuscated check
 	hook::jump(hook::get_call(hook::pattern("84 C0 74 0F BA 03 00 00 00 48 8B CB E8 ? ? ? ? EB 0E").count(1).get(0).get<void>(12)), ReturnTrue);
@@ -1634,19 +1568,24 @@ static HookFunction hookFunction([] ()
 	// semi-related: adding to a script handler checking for the above value being 0
 	hook::nop(hook::pattern("FF 50 28 45 33 E4 48 85 C0 0F 85").count(1).get(0).get<void>(9), 6);
 
-	// really weird patch to auto-start the session (?s in short jumps are because of +0x38 differences with steam/retail)
-	//hook::put<uint8_t>(hook::pattern("84 C0 74 ? 83 BB ? ? 00 00 07 74 ? E8").count(1).get(0).get<void>(2), 0xEB);
+	if (xbr::IsGameBuildOrGreater<2699>())
+	{
+		// now it's completely obfuscated, so just ignoring the entire list of checks
+		hook::jump(hook::get_call(hook::get_pattern("41 BD 20 00 00 00 48 8B CE 41 3B FD", -13)), ReturnTrue);
+	}
+	else
+	{
+		// some stat check in 'is allowed to run network game'; possibly SP prolog
+		hook::put<uint8_t>(hook::pattern("BA 87 03 00 00 E8 ? ? ? ? 84 C0 75 14").count(1).get(0).get<void>(12), 0xEB);
 
-	// some stat check in 'is allowed to run network game'; possibly SP prolog
-	hook::put<uint8_t>(hook::pattern("BA 87 03 00 00 E8 ? ? ? ? 84 C0 75 14").count(1).get(0).get<void>(12), 0xEB);
+		// same func, this time 'have tunables downloaded'
+		auto match = hook::pattern("80 B8 89 00 00 00 00 75 14 48").count(1).get(0);
 
-	// same func, this time 'have tunables downloaded'
-	auto match = hook::pattern("80 B8 89 00 00 00 00 75 14 48").count(1).get(0);
+		hook::put<uint8_t>(match.get<void>(7), 0xEB);
 
-	hook::put<uint8_t>(match.get<void>(7), 0xEB);
-
-	// and similarly, 'have bgscripts downloaded'
-	hook::put<uint8_t>(match.get<void>(43), 0xEB);
+		// and similarly, 'have bgscripts downloaded'
+		hook::put<uint8_t>(match.get<void>(43), 0xEB);
+	}
 
 	// unknownland
 	hook::put<uint16_t>(hook::pattern("8B B5 ? ? 00 00 85 F6 0F 84 ? 00 00").count(1).get(0).get<void>(8), 0xE990);
@@ -1755,17 +1694,13 @@ static HookFunction hookFunction([] ()
 		}
 	}
 
-	// network timeout
-	{
-		// ADD THIS BACK
-		//*hook::get_address<int*>(hook::get_pattern("BA 2B 2F A8 09 48 8B CF E8", 0x1B)) *= 2.5f;
-	}
-
 	// async SC init
 	{
 		auto location = hook::get_pattern<char>("E8 ? ? ? ? 84 C0 75 B6 88 05");
 		hook::set_call(&_isScWaitingForInit, location);
 		hook::call(location, ReturnFalse);
+
+		SetScInitWaitCallback(_isScWaitingForInit);
 
 		void(*_processEntitlements)();
 		hook::set_call(&_processEntitlements, location - 50);
@@ -1820,6 +1755,13 @@ static HookFunction hookFunction([] ()
 		auto location = hook::get_pattern("0F 85 ? ? ? ? 33 DB 38 1D ? ? ? ? 75", -0x14);
 		MH_CreateHook(location, BeforeReplayLoadHook, (void**)&g_origBeforeReplayLoad);
 		MH_EnableHook(MH_ALL_HOOKS);
+	}
+
+	// don't stop police scanner reports when changing time in a networked game (really?)
+	{
+		auto location = hook::get_pattern("48 8D 0D ? ? ? ? 33 D2 E8 ? ? ? ? 48 8B 05 ? ? ? ? 48 8B 48 08", 9);
+		hook::set_call(&g_origPoliceScanner_Stop, location);
+		hook::call(location, PoliceScanner_StopWrap);
 	}
 
 	// default netnoupnp and netnopcp to true

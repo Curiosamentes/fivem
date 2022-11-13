@@ -335,7 +335,7 @@
                 </Item>
                 <Item>
                   <PoolName>CAmmoItem</PoolName>
-                  <PoolSize value="300"/>
+                  <PoolSize value="350"/>
                 </Item>
                 <Item>
                   <PoolName>CSatchelItem</PoolName>
@@ -947,7 +947,7 @@
                 </Item>
                 <Item>
                   <PoolName>CScriptEntityExtension</PoolName>
-                  <PoolSize value="600"/>
+                  <PoolSize value="10000"/>
                 </Item>
                 <Item>
                   <PoolName>CScriptEntityIdExtension</PoolName>
@@ -1051,7 +1051,7 @@
                 </Item>
                 <Item>
                   <PoolName>Dummy Object</PoolName>
-                  <PoolSize value="13500"/>
+                  <PoolSize value="30000"/>
                 </Item>
                 <Item>
                   <PoolName>CPropSetObjectExtension</PoolName>
@@ -1291,7 +1291,7 @@
                 </Item>
                 <Item>
                   <PoolName>CLightEntity</PoolName>
-                  <PoolSize value="4400"/>
+                  <PoolSize value="8800"/>
                 </Item>
                 <Item>
                   <PoolName>MapDataLoadedNode</PoolName>
@@ -1303,7 +1303,7 @@
                 </Item>
                 <Item>
                   <PoolName>MapTypesStore</PoolName>
-                  <PoolSize value="2600"/>
+                  <PoolSize value="3200"/>
                 </Item>
                 <Item>
                   <PoolName>MetaDataStore</PoolName>
@@ -1485,7 +1485,7 @@
 				</Item>
                 <Item>
 					<PoolName>PortalInst</PoolName>
-					<PoolSize value="300" />
+					<PoolSize value="600" />
 				</Item>
 				<Item>
                   <PoolName>PoseMatcherStore</PoolName>
@@ -1598,7 +1598,7 @@
                 </Item>
                 <Item>
                   <PoolName>atDScriptObjectNode</PoolName>
-                  <PoolSize value="500"/>
+                  <PoolSize value="10000"/>
                 </Item>
                 <Item>
                   <PoolName>CRemoteScriptArgs</PoolName>
@@ -2275,7 +2275,7 @@
 				<RosTitleVersion value="11"/>
 				<RosScVersion value="11"/>
 				<RosGameServerVersionNumber value="17"/>
-				<RosGameServerCatalogReleaseId>mp009</RosGameServerCatalogReleaseId>
+				<RosGameServerCatalogReleaseId>mptmu01</RosGameServerCatalogReleaseId>
 				<RosScId value="13"/>
 				<TitleDirectoryName>Red Dead Redemption 2</TitleDirectoryName>
 				<MultiplayerSessionTemplateName>SessionTemplate</MultiplayerSessionTemplateName>
@@ -3963,7 +3963,7 @@
 					<RosTitleVersion value="11"/>
 					<RosScVersion value="11"/>
 					<RosGameServerVersionNumber value="1017"/>
-					<RosGameServerCatalogReleaseId>mp009</RosGameServerCatalogReleaseId>
+					<RosGameServerCatalogReleaseId>mptmu01</RosGameServerCatalogReleaseId>
 					<RosScId value="13"/>
 					<SteamAppId value="1174180"/>
 					<TitleDirectoryName>Red Dead Redemption 2</TitleDirectoryName>
@@ -4263,7 +4263,7 @@
 				<RosTitleVersion value="11"/>
 				<RosScVersion value="11"/>
 				<RosGameServerVersionNumber value="2017"/>
-				<RosGameServerCatalogReleaseId>mp009</RosGameServerCatalogReleaseId>
+				<RosGameServerCatalogReleaseId>mptmu01</RosGameServerCatalogReleaseId>
 				<RosScId value="13"/>
 				<TitleDirectoryName>Redemption 2</TitleDirectoryName>
 				<MultiplayerSessionTemplateName>SessionTemplate</MultiplayerSessionTemplateName>

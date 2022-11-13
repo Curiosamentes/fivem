@@ -20,6 +20,7 @@
 #include "NetLibraryImplBase.h"
 
 #include <NetAddress.h>
+#include <shared_mutex>
 
 // hacky include path to not conflict with our own NetBuffer.h
 #include <../../components/net-base/include/NetBuffer.h>
@@ -112,7 +113,15 @@ public:
 	};
 
 private:
-	std::unique_ptr<NetLibraryImplBase> m_impl;
+	inline std::shared_ptr<NetLibraryImplBase> GetImpl()
+	{
+		std::shared_lock _(m_implMutex);
+		return m_impl;
+	}
+
+private:
+	std::shared_ptr<NetLibraryImplBase> m_impl;
+	std::shared_mutex m_implMutex;
 
 	uint16_t m_serverNetID;
 
@@ -165,6 +174,8 @@ private:
 	std::string m_richError;
 
 	HANDLE m_receiveEvent;
+
+	bool m_disconnecting = false;
 
 	concurrency::concurrent_queue<std::function<void()>> m_mainFrameQueue;
 
@@ -331,7 +342,7 @@ public:
 #endif
 		fwEvent<NetLibrary*> OnNetLibraryCreate;
 
-	fwEvent<int> OnRequestBuildSwitch;
+	fwEvent<int /* build */, int /* pure level */> OnRequestBuildSwitch;
 
 	fwEvent<const char*> OnAttemptDisconnect;
 

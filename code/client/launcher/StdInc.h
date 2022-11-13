@@ -42,9 +42,14 @@ enum class compressionAlgo_e
 	Zstd,
 };
 
+struct baseDownload
+{
+	int count = 1;
+};
+
 void CL_InitDownloadQueue();
-void CL_QueueDownload(const char* url, const char* file, int64_t size, compressionAlgo_e algo);
-void CL_QueueDownload(const char* url, const char* file, int64_t size, compressionAlgo_e algo, int segments);
+std::shared_ptr<baseDownload> CL_QueueDownload(const char* url, const char* file, int64_t size, compressionAlgo_e algo);
+std::shared_ptr<baseDownload> CL_QueueDownload(const char* url, const char* file, int64_t size, compressionAlgo_e algo, int segments);
 
 bool DL_Process();
 
@@ -109,6 +114,10 @@ bool CheckFileOutdatedWithUI(const wchar_t* fileName, const std::vector<std::arr
 #define LAUNCHER_PERSONALITY_GAME
 #elif defined(LAUNCHER_PERSONALITY_GAME_2545)
 #define LAUNCHER_PERSONALITY_GAME
+#elif defined(LAUNCHER_PERSONALITY_GAME_2612)
+#define LAUNCHER_PERSONALITY_GAME
+#elif defined(LAUNCHER_PERSONALITY_GAME_2699)
+#define LAUNCHER_PERSONALITY_GAME
 #elif defined(LAUNCHER_PERSONALITY_GAME_372)
 #define LAUNCHER_PERSONALITY_GAME
 #elif defined(LAUNCHER_PERSONALITY_GAME_1604)
@@ -120,6 +129,8 @@ bool CheckFileOutdatedWithUI(const wchar_t* fileName, const std::vector<std::arr
 #elif defined(LAUNCHER_PERSONALITY_GAME_1355)
 #define LAUNCHER_PERSONALITY_GAME
 #elif defined(LAUNCHER_PERSONALITY_GAME_1436)
+#define LAUNCHER_PERSONALITY_GAME
+#elif defined(LAUNCHER_PERSONALITY_GAME_1491)
 #define LAUNCHER_PERSONALITY_GAME
 #endif
 #elif defined(GTA_NY)

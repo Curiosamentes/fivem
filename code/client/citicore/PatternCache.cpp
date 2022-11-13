@@ -10,11 +10,7 @@
 #if defined(GTA_FIVE) || defined(IS_RDR3)
 #include <Hooking.h>
 
-#if defined(IS_RDR3)
-static uintptr_t g_currentStub = 0x148000000;
-#else
-static uintptr_t g_currentStub = 0x146000000;
-#endif
+static uintptr_t g_currentStub = hook::exe_end();
 
 extern "C"
 {
@@ -54,6 +50,7 @@ extern "C"
 #endif
 
 #ifndef IS_FXSERVER
+#include "CrossBuildRuntime.h"
 #include <Hooking.Patterns.h>
 
 static std::multimap<uint64_t, uintptr_t> g_hints;
@@ -70,7 +67,7 @@ static InitFunction initFunction([]()
 	{
 		if (getenv("CitizenFX_ToolMode"))
 		{
-			g_currentStub = 0x140000000 + 0x02E23600;
+			g_currentStub = 0x140000000 + 0x0339A600;
 		}
 	}
 #endif
@@ -81,7 +78,7 @@ static InitFunction initFunction([]()
 		return;
 	}
 
-	std::wstring hintsFile = MakeRelativeCitPath(L"citizen\\hints.dat");
+	std::wstring hintsFile = MakeRelativeCitPath(fmt::sprintf(L"data\\cache\\hints_%d.dat", xbr::GetGameBuild()));
 	FILE* hints = _wfopen(hintsFile.c_str(), L"rb");
 	size_t numHints = 0;
 

@@ -15,6 +15,7 @@
 
 #include <CoreConsole.h>
 #include <LaunchMode.h>
+#include <PureModeState.h>
 
 #include <Error.h>
 
@@ -84,6 +85,11 @@ static bool IsCLRAssembly(const std::vector<uint8_t>& libraryBuffer)
 bool ComponentInstance::DoGameLoad(void* module)
 {
 	HookFunction::RunAll();
+
+	if (fx::client::GetPureLevel() >= 2)
+	{
+		return true;
+	}
 
 	try
 	{
@@ -179,7 +185,7 @@ bool ComponentInstance::DoGameLoad(void* module)
 
 					if (bad)
 					{
-						console::Printf("script:shv", "Unable to load %s - this ASI plugin does not claim to support game build %d. If you have access to its source code, add `FX_ASI_BUILD %d dummy.txt` to the .rc file when building this plugin. If not, contact its maintainer.\n", 
+						console::Printf("script:shv", "Unable to load %s - this ASI plugin does not claim to support game build %d. If you have access to its source code, add `FX_ASI_BUILD %d BEGIN \"\\0\" END` to the .rc file when building this plugin. If not, contact its maintainer.\n",
 							ToNarrow(it->path().wstring()).c_str(),
 							xbr::GetGameBuild(),
 							xbr::GetGameBuild()

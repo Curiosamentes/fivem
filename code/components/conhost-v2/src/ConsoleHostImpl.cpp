@@ -7,6 +7,7 @@
 
 #include "StdInc.h"
 #include <Error.h>
+
 #include "ConsoleHost.h"
 #include "ConsoleHostImpl.h"
 
@@ -38,6 +39,30 @@
 
 #include <HostSharedData.h>
 #include <ReverseGameData.h>
+
+static void BuildFont(float scale);
+
+static ImGuiStyle InitStyle()
+{
+	ImGuiStyle style;
+
+	ImColor hiliteBlue = ImColor(81, 179, 236);
+	ImColor hiliteBlueTransparent = ImColor(81, 179, 236, 180);
+	ImColor backgroundBlue = ImColor(22, 24, 28, 200);
+	ImColor semiTransparentBg = ImColor(50, 50, 50, 0.6 * 255);
+	ImColor semiTransparentBgHover = ImColor(80, 80, 80, 0.6 * 255);
+
+	style.Colors[ImGuiCol_WindowBg] = backgroundBlue;
+	style.Colors[ImGuiCol_TitleBg] = hiliteBlue;
+	style.Colors[ImGuiCol_TitleBgActive] = hiliteBlue;
+	style.Colors[ImGuiCol_TitleBgCollapsed] = hiliteBlue;
+	style.Colors[ImGuiCol_Border] = hiliteBlue;
+	style.Colors[ImGuiCol_FrameBg] = semiTransparentBg;
+	style.Colors[ImGuiCol_FrameBgHovered] = semiTransparentBgHover;
+	style.Colors[ImGuiCol_TextSelectedBg] = hiliteBlueTransparent;
+
+	return style;
+}
 
 static bool g_conHostInitialized = false;
 extern bool g_consoleFlag;
@@ -269,7 +294,19 @@ static void HandleFxDKInput(ImGuiIO& io)
 	}
 }
 
+void OnConsoleFrameDraw(int width, int height, bool usedSharedD3D11);
+
 DLL_EXPORT void OnConsoleFrameDraw(int width, int height)
+{
+	return OnConsoleFrameDraw(width, height, false);
+}
+
+extern ID3D11DeviceContext* g_pd3dDeviceContext;
+
+extern float ImGui_ImplWin32_GetWindowDpiScale(ImGuiViewport* viewport);
+extern void ImGui_ImplDX11_RecreateFontsTexture();
+
+void OnConsoleFrameDraw(int width, int height, bool usedSharedD3D11)
 {
 	if (!g_conHostMutex.try_lock())
 	{
@@ -277,6 +314,27 @@ DLL_EXPORT void OnConsoleFrameDraw(int width, int height)
 	}
 
 #ifndef IS_LAUNCHER
+	static float lastScale = 1.0f;
+	float scale = ImGui_ImplWin32_GetWindowDpiScale(ImGui::GetMainViewport());
+
+	if (scale > 2.0f)
+	{
+		scale = 2.0f;
+	}
+
+	if (scale != lastScale)
+	{
+		ImGui::GetStyle() = InitStyle();
+		ImGui::GetStyle().ScaleAllSizes(scale);
+
+		BuildFont(scale);
+		CreateFontTexture();
+
+		ImGui_ImplDX11_RecreateFontsTexture();
+
+		lastScale = scale;
+	}
+
 	if (!g_fontTexture)
 	{
 		CreateFontTexture();
@@ -305,8 +363,12 @@ DLL_EXPORT void OnConsoleFrameDraw(int width, int height)
 
 	{
 		io.DisplaySize = ImVec2(width, height);
-
 		io.DeltaTime = (timeGetTime() - lastDrawTime) / 1000.0f;
+
+		if (io.DeltaTime <= 0.0f)
+		{
+			io.DeltaTime = 1.0f / 60.0f;
+		}
 	}
 
 	io.KeyCtrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -367,8 +429,33 @@ DLL_EXPORT void OnConsoleFrameDraw(int width, int height)
 	ImGui::Render();
 	RenderDrawLists(ImGui::GetDrawData());
 
+	ID3D11RenderTargetView* oldRTV = nullptr;
+	ID3D11DepthStencilView* oldDSV = nullptr;
+
+	if (usedSharedD3D11)
+	{
+		g_pd3dDeviceContext->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+	}
+
     ImGui::UpdatePlatformWindows();
 	ImGui::RenderPlatformWindowsDefault();
+
+	if (usedSharedD3D11)
+	{
+		g_pd3dDeviceContext->OMSetRenderTargets(1, &oldRTV, oldDSV);
+
+		if (oldRTV)
+		{
+			oldRTV->Release();
+			oldRTV = nullptr;
+		}
+
+		if (oldDSV)
+		{
+			oldDSV->Release();
+			oldDSV = nullptr;
+		}
+	}
 
 	lastDrawTime = timeGetTime();
 
@@ -389,65 +476,12 @@ static void OnConsoleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, 
 	std::unique_lock<std::mutex> g_conHostMutex;
 	ImGuiIO& io = ImGui::GetIO();
 
-#if 0
-	switch (msg)
+	if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) == TRUE)
 	{
-		case WM_LBUTTONDOWN:
-			io.MouseDown[0] = true;
-			pass = false;
-			break;
-		case WM_LBUTTONUP:
-			io.MouseDown[0] = false;
-			pass = false;
-			break;
-		case WM_RBUTTONDOWN:
-			io.MouseDown[1] = true;
-			pass = false;
-			break;
-		case WM_RBUTTONUP:
-			io.MouseDown[1] = false;
-			pass = false;
-			break;
-		case WM_MBUTTONDOWN:
-			io.MouseDown[2] = true;
-			pass = false;
-			break;
-		case WM_MBUTTONUP:
-			io.MouseDown[2] = false;
-			pass = false;
-			break;
-		case WM_MOUSEWHEEL:
-			io.MouseWheel += GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? +1.0f : -1.0f;
-			pass = false;
-			break;
-		case WM_MOUSEMOVE:
-			io.MousePos.x = (signed short)(lParam);
-			io.MousePos.y = (signed short)(lParam >> 16);
-			pass = false;
-			break;
-		case WM_KEYDOWN:
-			if (wParam < 256)
-				io.KeysDown[wParam] = 1;
-			pass = false;
-			break;
-		case WM_KEYUP:
-			if (wParam < 256)
-				io.KeysDown[wParam] = 0;
-			pass = false;
-			break;
-		case WM_CHAR:
-			// You can also use ToAscii()+GetKeyboardState() to retrieve characters.
-			if (wParam > 0 && wParam < 0x10000)
-				io.AddInputCharacter((unsigned short)wParam);
-			pass = false;
-			break;
-		case WM_INPUT:
-			pass = false;
-			break;
+		pass = false;
+		result = true;
+		return;
 	}
-#endif
-
-	ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 	
 	if (msg == WM_INPUT || (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST))
 	{
@@ -475,9 +509,65 @@ DLL_EXPORT void RunConsoleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
 
 ImFont* consoleFontTiny;
 
+static void BuildFont(float scale)
+{
+	auto& io = ImGui::GetIO();
+	io.Fonts->Clear();
+	io.Fonts->SetTexID(nullptr);
+
+	FILE* font = _wfopen(MakeRelativeCitPath(L"citizen/consolefont.ttf").c_str(), L"rb");
+
+	ImVector<ImWchar> ranges;
+	ImFontGlyphRangesBuilder builder;
+
+	static const ImWchar extra_ranges[] = {
+		0x0100,
+		0x017F, // Latin Extended-A
+		0x0180,
+		0x024F, // Latin Extended-B
+		0x0370,
+		0x03FF, // Greek and Coptic
+		0x10A0,
+		0x10FF, // Georgian
+		0x1E00,
+		0x1EFF, // Latin Extended Additional
+		0,
+	};
+
+	builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+	builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
+	builder.AddRanges(&extra_ranges[0]);
+	builder.BuildRanges(&ranges);
+
+	if (font)
+	{
+		fseek(font, 0, SEEK_END);
+
+		auto fontSize = ftell(font);
+
+		std::unique_ptr<uint8_t[]> fontData(new uint8_t[fontSize]);
+
+		fseek(font, 0, SEEK_SET);
+
+		fread(&fontData[0], 1, fontSize, font);
+		fclose(font);
+
+		ImFontConfig fontCfg;
+		fontCfg.FontDataOwnedByAtlas = false;
+
+		io.Fonts->AddFontFromMemoryTTF(fontData.get(), fontSize, 22.0f * scale, &fontCfg, ranges.Data);
+		consoleFontSmall = io.Fonts->AddFontFromMemoryTTF(fontData.get(), fontSize, 18.0f * scale, &fontCfg, ranges.Data);
+		consoleFontTiny = io.Fonts->AddFontFromMemoryTTF(fontData.get(), fontSize, 14.0f * scale, &fontCfg, ranges.Data);
+
+		io.Fonts->Build();
+	}
+}
+
 #pragma comment(lib, "d3d11.lib")
 
 void ImGui_ImplWin32_InitPlatformInterface();
+
+extern ImGuiKey ImGui_ImplWin32_VirtualKeyToImGuiKey(WPARAM wParam);
 
 static HookFunction initFunction([]()
 {
@@ -485,26 +575,6 @@ static HookFunction initFunction([]()
 	ImGui::SetCurrentContext(cxt);
 
 	ImGuiIO& io = ImGui::GetIO();
-	io.KeyMap[ImGuiKey_Tab] = VK_TAB; // Keyboard mapping. ImGui will use those indices to peek into the io.KeyDown[] array that we will update during the application lifetime.
-	io.KeyMap[ImGuiKey_LeftArrow] = VK_LEFT;
-	io.KeyMap[ImGuiKey_RightArrow] = VK_RIGHT;
-	io.KeyMap[ImGuiKey_UpArrow] = VK_UP;
-	io.KeyMap[ImGuiKey_DownArrow] = VK_DOWN;
-	io.KeyMap[ImGuiKey_PageUp] = VK_PRIOR;
-	io.KeyMap[ImGuiKey_PageDown] = VK_NEXT;
-	io.KeyMap[ImGuiKey_Home] = VK_HOME;
-	io.KeyMap[ImGuiKey_End] = VK_END;
-	io.KeyMap[ImGuiKey_Delete] = VK_DELETE;
-	io.KeyMap[ImGuiKey_Backspace] = VK_BACK;
-	io.KeyMap[ImGuiKey_Enter] = VK_RETURN;
-	io.KeyMap[ImGuiKey_Escape] = VK_ESCAPE;
-	io.KeyMap[ImGuiKey_A] = 'A';
-	io.KeyMap[ImGuiKey_C] = 'C';
-	io.KeyMap[ImGuiKey_V] = 'V';
-	io.KeyMap[ImGuiKey_X] = 'X';
-	io.KeyMap[ImGuiKey_Y] = 'Y';
-	io.KeyMap[ImGuiKey_Z] = 'Z';
-
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 	io.ConfigDockingWithShift = true;
 	io.ConfigWindowsResizeFromEdges = true;
@@ -624,67 +694,12 @@ static HookFunction initFunction([]()
 	io.IniFilename = const_cast<char*>(imguiIni.c_str());
 	//io.ImeWindowHandle = g_hWnd;
 
-	ImGuiStyle& style = ImGui::GetStyle();
-
-	ImColor hiliteBlue = ImColor(81, 179, 236);
-	ImColor hiliteBlueTransparent = ImColor(81, 179, 236, 180);
-	ImColor backgroundBlue = ImColor(22, 24, 28, 200);
-	ImColor semiTransparentBg = ImColor(50, 50, 50, 0.6 * 255);
-	ImColor semiTransparentBgHover = ImColor(80, 80, 80, 0.6 * 255);
-
-	style.Colors[ImGuiCol_WindowBg] = backgroundBlue;
-	style.Colors[ImGuiCol_TitleBg] = hiliteBlue;
-	style.Colors[ImGuiCol_TitleBgActive] = hiliteBlue;
-	style.Colors[ImGuiCol_TitleBgCollapsed] = hiliteBlue;
-	style.Colors[ImGuiCol_Border] = hiliteBlue;
-	style.Colors[ImGuiCol_FrameBg] = semiTransparentBg;
-	style.Colors[ImGuiCol_FrameBgHovered] = semiTransparentBgHover;
-	style.Colors[ImGuiCol_TextSelectedBg] = hiliteBlueTransparent;
+	ImGui::GetStyle() = InitStyle();
 
 	// fuck rounding
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 
-	{
-		FILE* font = _wfopen(MakeRelativeCitPath(L"citizen/mensch.ttf").c_str(), L"rb");
-
-		ImVector<ImWchar> ranges;
-		ImFontGlyphRangesBuilder builder;
-
-		static const ImWchar extra_ranges[] =
-		{
-			0x0100, 0x017F, // Latin Extended-A
-			0x0180, 0x024F, // Latin Extended-B
-			0x0370, 0x03FF, // Greek and Coptic
-			0x10A0, 0x10FF, // Georgian
-			0x1E00, 0x1EFF, // Latin Extended Additional
-			0,
-		};
-
-		builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
-		builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
-		builder.AddRanges(&extra_ranges[0]);
-		builder.BuildRanges(&ranges);
-
-		if (font)
-		{
-			fseek(font, 0, SEEK_END);
-
-			auto fontSize = ftell(font);
-
-			uint8_t* fontData = new uint8_t[fontSize];
-
-			fseek(font, 0, SEEK_SET);
-
-			fread(&fontData[0], 1, fontSize, font);
-			fclose(font);
-
-			io.Fonts->AddFontFromMemoryTTF(fontData, fontSize, 22.0f, NULL, ranges.Data);
-
-			consoleFontSmall = io.Fonts->AddFontFromMemoryTTF(fontData, fontSize, 18.0f, NULL, ranges.Data);
-			consoleFontTiny = io.Fonts->AddFontFromMemoryTTF(fontData, fontSize, 14.0f, NULL, ranges.Data);
-			io.Fonts->Build();
-		}
-	}
+	BuildFont(1.0f);
 
 #ifndef IS_LAUNCHER
 	OnGrcCreateDevice.Connect([=]()
@@ -719,7 +734,7 @@ static HookFunction initFunction([]()
 
 				if (vKey < 256)
 				{
-					io.KeysDown[vKey] = 1;
+					io.AddKeyEvent(ImGui_ImplWin32_VirtualKeyToImGuiKey(vKey), true);
 				}
 			}
 
@@ -731,7 +746,7 @@ static HookFunction initFunction([]()
 
 				if (vKey < 256)
 				{
-					io.KeysDown[vKey] = 0;
+					io.AddKeyEvent(ImGui_ImplWin32_VirtualKeyToImGuiKey(vKey), false);
 				}
 			}
 
@@ -743,7 +758,7 @@ static HookFunction initFunction([]()
 
 				if (buttonIdx < std::size(io.MouseDown))
 				{
-					io.MouseDown[buttonIdx] = true;
+					io.AddMouseButtonEvent(buttonIdx, true);
 				}
 			}
 
@@ -755,7 +770,7 @@ static HookFunction initFunction([]()
 
 				if (buttonIdx < std::size(io.MouseDown))
 				{
-					io.MouseDown[buttonIdx] = false;
+					io.AddMouseButtonEvent(buttonIdx, false);
 				}
 			}
 
@@ -769,7 +784,7 @@ static HookFunction initFunction([]()
 				std::unique_lock<std::mutex> g_conHostMutex;
 
 				ImGuiIO& io = ImGui::GetIO();
-				io.MouseWheel += delta > 0 ? +1.0f : -1.0f;
+				io.AddMouseWheelEvent(0.0f, delta > 0 ? +1.0f : -1.0f);
 			}
 
 			virtual inline void MouseMove(int x, int y) override
@@ -777,8 +792,7 @@ static HookFunction initFunction([]()
 				std::unique_lock<std::mutex> g_conHostMutex;
 
 				ImGuiIO& io = ImGui::GetIO();
-				io.MousePos.x = (signed short)(x);
-				io.MousePos.y = (signed short)(y);
+				io.AddMousePosEvent((signed short)(x), (signed short)(y));
 			}
 		} tgt;
 
@@ -800,12 +814,12 @@ static HookFunction initFunction([]()
 		}
 	});
 
-	OnPostFrontendRender.Connect([]()
+	OnPostFrontendRender.Connect([usedSharedD3D11]()
 	{
 		int width, height;
 		GetGameResolution(width, height);
 
-		OnConsoleFrameDraw(width, height);
+		OnConsoleFrameDraw(width, height, usedSharedD3D11);
 	});
 #endif
 });

@@ -87,6 +87,26 @@ inline bool Is2545()
 	return value;
 }
 
+inline bool Is2612()
+{
+	static bool value = ([]()
+	{
+		return fx::GetEnforcedGameBuildNumber() >= 2612;
+	})();
+
+	return value;
+}
+
+inline bool Is2699()
+{
+	static bool value = ([]()
+	{
+		return fx::GetEnforcedGameBuildNumber() >= 2699;
+	})();
+
+	return value;
+}
+
 template<typename T>
 inline constexpr T roundToWord(T val)
 {
@@ -106,7 +126,7 @@ extern int m_ackTimeoutThreshold;
 
 namespace fx::sync
 {
-struct SyncParseState;
+struct SyncParseStateDynamic;
 struct SyncUnparseState;
 
 struct NodeBase;
@@ -499,7 +519,9 @@ struct SyncTreeBase
 public:
 	virtual ~SyncTreeBase() = default;
 
-	virtual void Parse(SyncParseState& state) = 0;
+	virtual void ParseSync(SyncParseStateDynamic& state) = 0;
+
+	virtual void ParseCreate(SyncParseStateDynamic& state) = 0;
 
 	virtual bool Unparse(SyncUnparseState& state) = 0;
 
@@ -653,6 +675,7 @@ struct SyncEntityState
 	// #IFARQ this means lastFramesSent
 	std::array<uint64_t, MAX_CLIENTS> lastFramesPreSent;
 
+	std::chrono::milliseconds createdAt{ 0 };
 	std::chrono::milliseconds lastReceivedAt;
 	std::chrono::milliseconds lastMigratedAt;
 
@@ -794,13 +817,35 @@ using SyncEntityWeakPtr = weak_reference<SyncEntityPtr>;
 struct SyncParseState
 {
 	rl::MessageBuffer buffer;
-	int syncType;
-	int objType;
 	uint32_t timestamp;
 
 	SyncEntityPtr entity;
 
 	uint64_t frameIndex;
+
+	inline SyncParseState(rl::MessageBuffer&& buffer, uint32_t timestamp, const SyncEntityPtr& entity, uint64_t frameIndex)
+		: buffer(std::move(buffer)), timestamp(timestamp), entity(entity), frameIndex(frameIndex)
+	{
+	}
+
+private:
+	// use SyncParseStateDynamic instead
+	inline SyncParseState(rl::MessageBuffer&& buffer, int syncType, int objType, uint32_t timestamp, const SyncEntityPtr& entity, uint64_t frameIndex)
+	{
+		
+	}
+};
+
+struct SyncParseStateDynamic : SyncParseState
+{
+	int syncType;
+	int objType;
+
+	inline SyncParseStateDynamic(rl::MessageBuffer&& buffer, int syncType, int objType, uint32_t timestamp, const SyncEntityPtr& entity, uint64_t frameIndex)
+		: SyncParseState(std::move(buffer), timestamp, entity, frameIndex), syncType(syncType), objType(objType)
+	{
+	
+	}
 };
 
 struct SyncUnparseState
@@ -1121,6 +1166,11 @@ public:
 
 	void ForAllEntities(const std::function<void(sync::Entity*)>& cb);
 
+	inline auto GetServerInstance() const
+	{
+		return m_instance;
+	}
+
 private:
 	void ProcessCloneCreate(const fx::ClientSharedPtr& client, rl::MessageBuffer& inPacket, AckPacketWrapper& ackPacket);
 
@@ -1145,6 +1195,12 @@ private:
 	bool ValidateEntity(EntityLockdownMode entityLockdownMode, const fx::sync::SyncEntityPtr& entity);
 
 public:
+	std::function<bool()> GetGameEventHandler(const fx::ClientSharedPtr& client, const std::vector<uint16_t>& targetPlayers, net::Buffer&& buffer);
+
+private:
+	std::function<bool()> GetRequestControlEventHandler(const fx::ClientSharedPtr& client, net::Buffer&& buffer);
+
+public:
 	fx::sync::SyncEntityPtr GetEntity(uint8_t playerId, uint16_t objectId);
 	fx::sync::SyncEntityPtr GetEntity(uint32_t handle);
 
@@ -1153,7 +1209,9 @@ public:
 private:
 	fx::ServerInstanceBase* m_instance;
 
+#ifdef USE_ASYNC_SCL_POSTING
 	std::unique_ptr<ThreadPool> m_tg;
+#endif
 
 	// as bitset is not thread-safe
 	std::shared_mutex m_objectIdsMutex;
@@ -1250,7 +1308,11 @@ private:
 public:
 	bool MoveEntityToCandidate(const fx::sync::SyncEntityPtr& entity, const fx::ClientSharedPtr& client);
 
-	void SendPacket(int peer, std::string_view data);
+	void SendPacket(int peer, std::string_view data) override;
+
+	bool IsAsynchronous() override;
+
+	void QueueTask(std::function<void()>&& task) override;
 
 	inline const fwRefContainer<fx::StateBagComponent>& GetStateBags()
 	{

@@ -23,7 +23,7 @@ param (
 	$Identity = "C:\guava_deploy.ppk"
 )
 
-$CefName = "cef_binary_91.0.0-cfx-m91.2364+g9a59a88+chromium-91.0.4472.48_windows64_minimal"
+$CefName = "cef_binary_103.0.0-cfx-m103.2604+g164c280+chromium-103.0.5060.141_windows64_minimal"
 
 Import-Module $PSScriptRoot\cache_build.psm1
 
@@ -244,7 +244,7 @@ if (!$DontBuild)
 	Pop-Location
 
 	Start-Section "update_submodule_git" "Updating all submodules"
-	git submodule update --jobs=8
+	git submodule update --jobs=8 --force
 	End-Section "update_submodule_git"
 
 	Pop-Location
@@ -316,10 +316,6 @@ if (!$DontBuild)
 		$GameName = "rdr3"
 		$BuildPath = "$BuildRoot\rdr3"
 	}
-	
-	if ($IsServer) {
-		Invoke-Expression "& $WorkRootDir\tools\ci\build_rs.cmd"
-	}
 
 	Start-Section "premake" "Running premake"
 	Invoke-Expression "& $WorkRootDir\tools\ci\premake5 $VSLine --game=$GameName --builddir=$BuildRoot --bindir=$BinRoot"
@@ -331,6 +327,12 @@ if (!$DontBuild)
 	if ((!(Test-Path shared\citversion.h)) -or ($null -ne (Compare-Object (Get-Content shared\citversion.h.tmp) (Get-Content shared\citversion.h)))) {
 		Remove-Item -Force shared\citversion.h
 		Move-Item -Force shared\citversion.h.tmp shared\citversion.h
+
+		if (Test-Path env:\CI_PIPELINE_ID) {
+			"#pragma once
+			#define EXE_VERSION ${env:CI_PIPELINE_ID}
+" | Out-File -Force shared\launcher_version.h
+		}
 	}
 
 	"#pragma once
@@ -349,7 +351,7 @@ if (!$DontBuild)
 	#echo $env:Path
 	#/logger:C:\f\customlogger.dll /noconsolelogger
 	Start-Section "msbuild" "Running msbuild..."
-	msbuild /p:preferredtoolarchitecture=x64 /p:configuration=release /v:q /fl /m $BuildPath\CitizenMP.sln
+	msbuild /p:preferredtoolarchitecture=x64 /p:configuration=release /v:q /m $BuildPath\CitizenMP.sln
 
 	if (!$?) {
 		Invoke-WebHook "Building Cfx/$GameName failed :("
@@ -391,6 +393,7 @@ if (!$DontBuild -and $IsServer) {
 
 	# same as for UISucceeded
 	if ($SRSucceeded -or $env:APPVEYOR) {
+		Remove-Item -Recurse -Force $WorkDir\data\server\citizen\system_resources\ | Out-Null
 		New-Item -ItemType Directory -Force $WorkDir\data\server\citizen\system_resources\ | Out-Null
 		Copy-Item -Force -Recurse $WorkDir\ext\system-resources\data\* $WorkDir\data\server\citizen\system_resources\
 	} else {
@@ -400,6 +403,7 @@ if (!$DontBuild -and $IsServer) {
 	Pop-Location
 	End-Section "sr"
 
+	Remove-Item -Recurse -Force $WorkDir\out | Out-Null
 	New-Item -ItemType Directory -Force $WorkDir\out | Out-Null
 	New-Item -ItemType Directory -Force $WorkDir\out\server | Out-Null
 	New-Item -ItemType Directory -Force $WorkDir\out\server\citizen | Out-Null
@@ -415,10 +419,9 @@ if (!$DontBuild -and $IsServer) {
 	Copy-Item -Force -Recurse $WorkDir\data\server_windows\* $WorkDir\out\server\
 
 	Remove-Item -Force $WorkDir\out\server\citizen\.gitignore
-	
-	# old filenames
-	Remove-Item -Force $WorkDir\out\server\citizen\system_resources\monitor\starter.js
-	Remove-Item -Force $WorkDir\out\server\citizen\system_resources\monitor\scripts\menu\client\cl_menu.lua
+
+	# breaks downlevel OS compat
+	Remove-Item -Force $WorkDir\out\server\dbghelp.dll
 	
 	# useless client-related scripting stuff
 	Remove-Item -Force $WorkDir\out\server\citizen\scripting\lua\natives_0*.zip
@@ -528,7 +531,8 @@ if (!$DontBuild -and !$IsServer) {
 		Copy-Item -Force -Recurse $WorkDir\data\client\* $CacheDir\fivereborn\
 		Copy-Item -Force -Recurse $WorkDir\data\redist\crt\* $CacheDir\fivereborn\bin\
 		
-		Copy-Item -Force -Recurse C:\f\grpc-ipfs.dll $CacheDir\fivereborn\
+		Remove-Item -Force -Recurse $CacheDir\fivereborn\grpc-ipfs.dll
+		Remove-Item -Force -Recurse $CacheDir\fivereborn\ipfsdl.dll
 	} elseif ($IsLauncher) {
 		Copy-Item -Force -Recurse $WorkDir\data\launcher\* $CacheDir\fivereborn\
 		Copy-Item -Force -Recurse $WorkDir\data\client\bin\* $CacheDir\fivereborn\bin\
@@ -618,8 +622,6 @@ if (!$DontBuild -and !$IsServer) {
 	Start-Section "caches_fin" "Gathering more caches"
 	Invoke-Expression "& $WorkRootDir\tools\ci\xz.exe -9 CitizenFX.exe"
 
-	Invoke-WebRequest -Method POST -UseBasicParsing "https://crashes.fivem.net/management/add-version/1.3.0.$GameVersion"
-
 	$uri = 'https://sentry.fivem.net/api/0/organizations/citizenfx/releases/'
 	$json = @{
 		version = "cfx-${env:CI_PIPELINE_ID}"
@@ -629,7 +631,7 @@ if (!$DontBuild -and !$IsServer) {
 				commit = $env:CI_COMMIT_SHA
 			}
 		)
-		projects = @("fivem-client-1604")
+		projects = @("fivem-client-1604", "redm")
 	} | ConvertTo-Json
 
 	$headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"

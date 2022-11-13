@@ -108,6 +108,23 @@ const static const wchar_t* g_delayDLLs[] = {
 #include "DelayList.h"
 };
 
+void DLLError(DWORD errorCode, std::string_view dllName)
+{
+	// force verifying game files
+	_wunlink(MakeRelativeCitPath(L"content_index.xml").c_str());
+
+	wchar_t errorText[512];
+	errorText[0] = L'\0';
+
+	FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_MAX_WIDTH_MASK, nullptr, errorCode, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), errorText, std::size(errorText), nullptr);
+
+	FatalError("Could not load %s\nThis is usually a sign of an incomplete game installation. Please restart %s and try again.\n\nError 0x%08x - %s",
+		dllName,
+		ToNarrow(PRODUCT_NAME),
+		HRESULT_FROM_WIN32(errorCode),
+		ToNarrow(errorText));
+}
+
 int RealMain()
 {
 	if (auto setSearchPathMode = (decltype(&SetSearchPathMode))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetSearchPathMode"))
@@ -159,6 +176,13 @@ int RealMain()
 
 				hProcess = OpenProcess(SYNCHRONIZE, FALSE, initStateOld->initialGamePid);
 				initStateOld->initialGamePid = 0;
+
+				if (auto eventStr = wcsstr(GetCommandLineW(), L"-switchcl:"))
+				{
+					HANDLE eventHandle = reinterpret_cast<HANDLE>(wcstoull(&eventStr[10], nullptr, 10));
+					SetEvent(eventHandle);
+					CloseHandle(eventHandle);
+				}
 			}
 
 			if (hProcess)
@@ -387,6 +411,14 @@ int RealMain()
 	if (!tlsDll)
 	{
 		tlsDll = LoadLibraryW(MakeRelativeCitPath(L"CitiLaunch_TLSDummy.dll").c_str());
+
+		if (!tlsDll)
+		{
+			DWORD errorCode = GetLastError();
+
+			DLLError(errorCode, "TLS DLL");
+		}
+
 		assert(tlsDll);
 	}
 #endif
@@ -550,14 +582,17 @@ int RealMain()
 		return *gamePathExit;
 	}
 
-	// don't load anything resembling ReShade *at all* until the game is loading(!)
+	// don't load anything resembling ReShade/ENBSeries *at all* until the game is loading(!)
 	loadSystemDll(L"\\dxgi.dll");
 
-	// don't load d3d11.dll from game dir for subprocesses or invalid cases
-	//if ((!initState->IsMasterProcess() && !initState->IsGameProcess()) || IsUnsafeGraphicsLibrary())
-	{
-		loadSystemDll(L"\\d3d11.dll");
-	}
+	// *must* load a d3d11.dll before anything else!
+	// if not, system d3d10.dll etc. may load a d3d11.dll from search path anyway and this may be a 'weird' one
+	loadSystemDll(L"\\d3d11.dll");
+
+	loadSystemDll(L"\\d3d9.dll");
+	loadSystemDll(L"\\d3d10.dll");
+	loadSystemDll(L"\\d3d10_1.dll");
+	loadSystemDll(L"\\opengl32.dll");
 
 #ifndef LAUNCHER_PERSONALITY_CHROME
 	LoadLibrary(MakeRelativeCitPath(L"botan.dll").c_str());
@@ -667,8 +702,8 @@ int RealMain()
 					{
 						if (elevationData == TokenElevationTypeFull)
 						{
-							const wchar_t* elevationComplaint = va(gettext(L"FiveM does not support running under elevated privileges. Please change your Windows settings to not run FiveM as administrator.\nThe game will exit now."));
-							MessageBox(nullptr, elevationComplaint, L"FiveM", MB_OK | MB_ICONERROR);
+							const wchar_t* elevationComplaint = va(gettext(L"%s does not support running under elevated privileges. Please change your Windows settings to not run %s as administrator.\nThe game will exit now."), PRODUCT_NAME, PRODUCT_NAME);
+							MessageBox(nullptr, elevationComplaint, PRODUCT_NAME, MB_OK | MB_ICONERROR);
 
 							return 0;
 						}
@@ -767,29 +802,8 @@ int RealMain()
 				VS_FIXEDFILEINFO* fixedInfo = reinterpret_cast<VS_FIXEDFILEINFO*>(fixedInfoBuffer);
 
 #if defined(GTA_FIVE)
-				auto expectedVersion = 1604;
+				auto expectedVersion = xbr::GetGameBuild();
 
-				if (Is372())
-				{
-					expectedVersion = 372;
-				}
-				else if (Is2060())
-				{
-					expectedVersion = 2060;
-				}
-				else if (Is2189())
-				{
-					expectedVersion = 2189;
-				}
-				else if (Is2372())
-				{
-					expectedVersion = 2372;
-				}
-				else if (Is2545())
-				{
-					expectedVersion = 2545;
-				}
-				
 				if ((fixedInfo->dwFileVersionLS >> 16) != expectedVersion)
 #else
 				auto expectedVersion = 43;
@@ -797,7 +811,7 @@ int RealMain()
 				if ((fixedInfo->dwFileVersionLS & 0xFFFF) != expectedVersion)
 #endif
 				{
-					MessageBox(nullptr, va(L"The found game executable (%s) has version %d.%d.%d.%d, but we're trying to run with 1.0.%d.0. Please obtain this version, and try again.",
+					MessageBox(nullptr, va(L"The found game executable (%s) has version %d.%d.%d.%d, but we're trying to run build %d. Please obtain this version, and try again.",
 										   gameExecutable.c_str(),
 										   (fixedInfo->dwFileVersionMS >> 16),
 										   (fixedInfo->dwFileVersionMS & 0xFFFF),
@@ -1037,8 +1051,8 @@ int RealMain()
 				}
 				else
 				{
-					// a bit of a lie, but it has some of the same causes so should be bucketed together
-					FatalError("Could not load CitizenGame.dll.");
+					DWORD errorCode = GetLastError();
+					DLLError(errorCode, "CoreRT.dll");
 				}
 
 				return 0;
