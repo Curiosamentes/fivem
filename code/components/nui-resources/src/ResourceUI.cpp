@@ -32,6 +32,8 @@ ResourceUI::~ResourceUI()
 
 bool ResourceUI::Create()
 {
+	m_isDead = false;
+
 	// initialize callback handlers
 	auto resourceName = m_resource->GetName();
 	std::transform(resourceName.begin(), resourceName.end(), resourceName.begin(), ::ToLower);
@@ -101,6 +103,8 @@ bool ResourceUI::Create()
 
 void ResourceUI::Destroy()
 {
+	m_isDead = true;
+
 	if (m_hasFrame)
 	{
 		// destroy the target frame
@@ -123,6 +127,9 @@ void ResourceUI::RemoveCallback(const std::string& type)
 	m_callbacks.erase(type);
 }
 
+static std::mutex g_nuiCallbackMutex;
+static std::queue<std::function<void()>> g_nuiCallbackQueue;
+
 bool ResourceUI::InvokeCallback(const std::string& type, const std::string& query, const std::multimap<std::string, std::string>& headers, const std::string& data, ResUIResultCallback resultCB)
 {
 	auto set = fx::GetIteratorView(m_callbacks.equal_range(type));
@@ -140,10 +147,30 @@ bool ResourceUI::InvokeCallback(const std::string& type, const std::string& quer
 		}
 	}
 
+	std::vector<ResUICallback> cbSet;
+
 	for (auto& cb : set)
 	{
-		cb.second(type, query, headers, data, resultCB);
+		cbSet.push_back(cb.second);
 	}
+
+	fwRefContainer selfRef = this;
+
+	std::function<void()> cb = [selfRef, cbSet = std::move(cbSet), type, query, headers, data, resultCB = std::move(resultCB)]()
+	{
+		if (selfRef->IsDead())
+		{
+			return;
+		}
+
+		for (const auto& cb : cbSet)
+		{
+			cb(type, query, headers, data, resultCB);
+		}
+	};
+
+	std::unique_lock _(g_nuiCallbackMutex);
+	g_nuiCallbackQueue.push(std::move(cb));
 
 	return true;
 }
@@ -177,6 +204,28 @@ static InitFunction initFunction([] ()
 {
 	fx::ResourceManager::OnInitializeInstance.Connect([](fx::ResourceManager* manager)
 	{
+		manager->OnTick.Connect([]()
+		{
+			auto pop = []() -> std::function<void()>
+			{
+				std::unique_lock _(g_nuiCallbackMutex);
+				if (!g_nuiCallbackQueue.empty())
+				{
+					auto fn = std::move(g_nuiCallbackQueue.front());
+					g_nuiCallbackQueue.pop();
+
+					return std::move(fn);
+				}
+
+				return {};
+			};
+
+			while (auto fn = pop())
+			{
+				fn();
+			}
+		}, INT32_MAX);
+
 		nui::SetResourceLookupFunction([manager](const std::string& resourceName, const std::string& fileName) -> std::string
 		{
 			fwRefContainer<fx::Resource> resource;
@@ -255,7 +304,7 @@ static InitFunction initFunction([] ()
 		});
 	});
 
-	Resource::OnInitializeInstance.Connect([] (Resource* resource)
+	fx::Resource::OnInitializeInstance.Connect([] (Resource* resource)
 	{
 		// create the UI instance
 		fwRefContainer<ResourceUI> resourceUI(new ResourceUI(resource));
