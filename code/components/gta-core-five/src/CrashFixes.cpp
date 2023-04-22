@@ -573,6 +573,20 @@ static int _calculateLeapFix(clockInfo* clock)
 	return g_origCalculateLeap(clock);
 }
 
+static int (*g_origGetCacheLineSize)();
+
+static int GetCacheLineSizeHook()
+{
+	auto rv = g_origGetCacheLineSize();
+
+	if (rv == 0)
+	{
+		return 64;
+	}
+
+	return rv;
+}
+
 static HookFunction hookFunction{[] ()
 {
 	// CModelInfoStreamingModule LookupModelId null return
@@ -703,9 +717,8 @@ static HookFunction hookFunction{[] ()
 			test(rcx, rcx);
 			jz("justReturn");
 
-			// 505-specific offset
-			// valid for 1032 as well
-			movzx(ebx, word_ptr[rcx + 0x668]);
+			// validated for 1604-2802
+			movzx(ebx, word_ptr[rcx + 0x690]);
 			ret();
 
 			L("justReturn");
@@ -729,9 +742,8 @@ static HookFunction hookFunction{[] ()
 			test(rax, rax);
 			jz("justReturn");
 
-			// 505-specific offset
-			// valid for 1103 as well
-			cmp(qword_ptr[rax + 0x670], 0);
+			// validated for 1604-2802
+			cmp(qword_ptr[rax + 0x698], 0);
 
 			L("justReturn");
 			ret();
@@ -1178,6 +1190,9 @@ static HookFunction hookFunction{[] ()
 
 	// hook to pretend any such slot is loaded
 	MH_CreateHook(hook::get_pattern("75 0D F6 84 08 ? ? 00 00", -0xB), CText__IsSlotLoadedHook, (void**)&g_origCText__IsSlotLoaded);
+
+	// cache line size can't be 0, breaks Nickel XTA
+	MH_CreateHook(hook::get_pattern("B8 01 00 00 00 0F A2 C1 EB 08", -0x11), GetCacheLineSizeHook, (void**)&g_origGetCacheLineSize);
 
 	// and to prevent unloading
 	if (!Is372())
