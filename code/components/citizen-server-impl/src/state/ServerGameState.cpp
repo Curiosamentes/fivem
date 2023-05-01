@@ -271,14 +271,17 @@ static void CreateSyncData(ServerGameState* state, const fx::ClientSharedPtr& cl
 
 		if (client && data)
 		{
-			data->playerBag = state->GetStateBags()->RegisterStateBag(fmt::sprintf("player:%d", client->GetNetId()));
-
-			if (fx::IsBigMode())
+			if (client->GetNetId() < 0xFFFF)
 			{
-				data->playerBag->AddRoutingTarget(client->GetSlotId());
-			}
+				data->playerBag = state->GetStateBags()->RegisterStateBag(fmt::sprintf("player:%d", client->GetNetId()));
 
-			data->playerBag->SetOwningPeer(client->GetSlotId());
+				if (fx::IsBigMode())
+				{
+					data->playerBag->AddRoutingTarget(client->GetSlotId());
+				}
+
+				data->playerBag->SetOwningPeer(client->GetSlotId());
+			}
 		}
 	};
 
@@ -329,6 +332,11 @@ inline std::shared_ptr<GameStateClientData> GetClientDataUnlocked(ServerGameStat
 inline std::tuple<std::unique_lock<std::mutex>, std::shared_ptr<GameStateClientData>> GetClientData(ServerGameState* state, const fx::ClientSharedPtr& client)
 {
 	auto val = GetClientDataUnlocked(state, client);
+
+	if (!val)
+	{
+		return {};
+	}
 
 	std::unique_lock<std::mutex> lock(val->selfMutex);
 	return { std::move(lock), val };
@@ -2876,8 +2884,6 @@ void ServerGameState::HandleClientDrop(const fx::ClientSharedPtr& client, uint16
 			}
 		}
 	}
-
-	client->SetSyncData({});
 }
 
 void ServerGameState::ClearClientFromWorldGrid(const fx::ClientSharedPtr& targetClient)
