@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security;
 
 using CitizenFX.Core.Native;
 
@@ -10,6 +11,8 @@ namespace CitizenFX.Core
 	{
 		private static Dictionary<string, List<Tuple<DynFunc, Binding>>> s_eventHandlers = new Dictionary<string, List<Tuple<DynFunc, Binding>>>();
 
+
+		[SecuritySafeCritical]
 		internal static unsafe void IncomingEvent(string eventName, string sourceString, Binding origin, byte* argsSerialized, int serializedSize, object[] args)
 		{
 			if (s_eventHandlers.TryGetValue(eventName, out var delegateList))
@@ -36,12 +39,7 @@ namespace CitizenFX.Core
 						}
 						catch (Exception ex)
 						{
-							if (Debug.ShouldWeLogDynFuncError(ex, ev.Item1))
-							{
-								string argsString = string.Join<string>(", ", args.Select(a => a != null ? a.GetType().ToString() : "null"));
-								Debug.WriteLine($"^1Error while handling event: {eventName}\n\twith arguments: ({argsString})^7");
-								Debug.PrintError(ex);
-							}
+							Debug.WriteException(ex, ev.Item1, args, "event handler");
 						}
 					}
 				}
@@ -96,6 +94,25 @@ namespace CitizenFX.Core
 		}
 
 		public void Add(string key, DynFunc value) => this[key].Add(value);
+
+		/// <summary>
+		/// Should only be called by <see cref="BaseScript.Enable"/> or any other code that guarantees that it is only called once
+		/// </summary>
+		internal void Enable()
+		{
+			foreach (var ev in this)
+			{
+				ev.Value.Enable();
+			}
+		}
+
+		internal void Disable()
+		{
+			foreach (var ev in this)
+			{
+				ev.Value.Disable();
+			}
+		}
 	}
 
 	public class EventHandlerSet
@@ -110,12 +127,14 @@ namespace CitizenFX.Core
 
 		~EventHandlerSet()
 		{
-			for(int i = 0; i < m_handlers.Count; ++i)
-			{
-				EventsManager.RemoveEventHandler(m_eventName, m_handlers[i]);
-			}
+			Disable();
 		}
 
+		/// <summary>
+		/// Register an event handler
+		/// </summary>
+		/// <param name="deleg">delegate to call once triggered</param>
+		/// <param name="binding">limit calls to certain sources, e.g.: server only, client only</param>
 		public EventHandlerSet Add(DynFunc deleg, Binding binding = Binding.Local)
 		{
 			m_handlers.Add(deleg);
@@ -123,6 +142,10 @@ namespace CitizenFX.Core
 			return this;
 		}
 
+		/// <summary>
+		/// Unregister an event handler
+		/// </summary>
+		/// <param name="deleg">delegate to remove</param>
 		public EventHandlerSet Remove(Delegate deleg)
 		{
 			int index = m_handlers.FindIndex(cur => deleg.Equals(cur));
@@ -134,25 +157,58 @@ namespace CitizenFX.Core
 			return this;
 		}
 
+		/// <summary>
+		/// Register an event handler
+		/// </summary>
+		/// <remarks>Will add it as <see cref="Binding.Local"/>, use <see cref="Add(DynFunc, Binding)"/> to explicitly set the binding.</remarks>
+		/// <param name="entry">this event handler set</param>
+		/// <param name="deleg">delegate to register</param>
+		/// <returns>itself</returns>
 		public static EventHandlerSet operator +(EventHandlerSet entry, DynFunc deleg) => entry.Add(deleg);
 
+		/// <summary>
+		/// Unregister an event handler
+		/// </summary>
+		/// <param name="entry">this event handler set</param>
+		/// <param name="deleg">delegate to register</param>
+		/// <returns>itself</returns>
 		public static EventHandlerSet operator -(EventHandlerSet entry, DynFunc deleg) => entry.Remove(deleg);
 
 		/// <summary>
-		/// Backwards compatibility
+		/// Register an event handler
 		/// </summary>
-		/// <param name="entry"></param>
-		/// <param name="deleg"></param>
-		/// <returns></returns>
-		[Obsolete("This is slow, use += Func.Create<T..., Ret>(method) instead.", false)]
-		public static EventHandlerSet operator +(EventHandlerSet entry, Delegate deleg) => entry.Add((remote, args) => deleg.DynamicInvoke(args));
+		/// <remarks>Will add it as <see cref="Binding.Local"/>, use <see cref="Add(DynFunc, Binding)"/> to explicitly set the binding.</remarks>
+		/// <param name="entry">this event handler set</param>
+		/// <param name="deleg">delegate to register</param>
+		/// <returns>itself</returns>
+		public static EventHandlerSet operator +(EventHandlerSet entry, Delegate deleg) => entry.Add(Func.Create(deleg));
 
 		/// <summary>
-		/// Backwards compatibility
+		/// Unregister an event handler
 		/// </summary>
-		/// <param name="entry"></param>
-		/// <param name="deleg"></param>
-		/// <returns></returns>
+		/// <param name="entry">this event handler set</param>
+		/// <param name="deleg">delegate to register</param>
+		/// <returns>itself</returns>
 		public static EventHandlerSet operator -(EventHandlerSet entry, Delegate deleg) => entry.Remove(deleg);
+
+
+		/// <summary>
+		/// Should only be called by <see cref="EventHandler.Enable"/> or any other code that guarantees that it is only called once
+		/// </summary>
+		internal void Enable()
+		{
+			for (int i = 0; i < m_handlers.Count; ++i)
+			{
+				EventsManager.AddEventHandler(m_eventName, m_handlers[i]);
+			}
+		}
+
+		internal void Disable()
+		{
+			for (int i = 0; i < m_handlers.Count; ++i)
+			{
+				EventsManager.RemoveEventHandler(m_eventName, m_handlers[i]);
+			}
+		}
 	}
 }
