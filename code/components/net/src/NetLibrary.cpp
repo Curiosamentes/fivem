@@ -33,6 +33,10 @@
 
 #include <json.hpp>
 
+#ifdef FIVEM_INTERNAL_POSTMAP
+#include "InternalServerPostmap_includes.h"
+#endif
+
 using json = nlohmann::json;
 
 #include <Error.h>
@@ -1050,6 +1054,10 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 
 	g_serverVersion = 0;
 
+#ifdef FIVEM_INTERNAL_POSTMAP
+#include "InternalServerPostmap.h"
+#endif
+
 	static std::function<bool(const std::string&)> handleAuthResultData;
 	handleAuthResultData = [=](const std::string& chunk)
 	{
@@ -1809,7 +1817,7 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 						if ((buildRef != 0 && buildRef != xbr::GetGameBuild()) || (pureLevel != fx::client::GetPureLevel()))
 						{
 #if defined(GTA_FIVE)
-							if (buildRef != 1604 && buildRef != 2060 && buildRef != 2189 && buildRef != 2372 && buildRef != 2545 && buildRef != 2612 && buildRef != 2699 && buildRef != 2802 && buildRef != 2944)
+							if (buildRef != 1604 && buildRef != 2060 && buildRef != 2189 && buildRef != 2372 && buildRef != 2545 && buildRef != 2612 && buildRef != 2699 && buildRef != 2802 && buildRef != 2944 && buildRef != 3095)
 #else
 							if (buildRef != 1311 && buildRef != 1355 && buildRef != 1436 && buildRef != 1491)
 #endif

@@ -1039,7 +1039,7 @@ struct CVehicleHealthDataNode
 
 		if (unk18)
 		{
-			auto unk19 = state.buffer.ReadBit();
+			auto unk19 = state.buffer.Read<uint16_t>(13); // damage entity
 			int lastDamageSource = state.buffer.Read<int>(32);
 		}
 
@@ -4167,14 +4167,14 @@ using CPlayerSyncTree = SyncTree<
 				ParentNode<
 					NodeIds<127, 87, 0>,
 					NodeWrapper<NodeIds<127, 127, 1>, CEntityScriptGameStateDataNode, 1>,
-					NodeWrapper<NodeIds<87, 87, 0>, CPlayerGameStateDataNode, 102>
+					NodeWrapper<NodeIds<87, 87, 0>, CPlayerGameStateDataNode, 104>
 				>
 			>,
 			NodeWrapper<NodeIds<127, 127, 1>, CPedAttachDataNode, 22>,
 			NodeWrapper<NodeIds<127, 127, 0>, CPedHealthDataNode, 17>,
 			NodeWrapper<NodeIds<87, 87, 0>, CPedMovementGroupDataNode, 26>,
 			NodeWrapper<NodeIds<127, 127, 1>, CPedAIDataNode, 9>,
-			NodeWrapper<NodeIds<87, 87, 0>, CPlayerAppearanceDataNode, 544>,
+			NodeWrapper<NodeIds<87, 87, 0>, CPlayerAppearanceDataNode, 560>,
 			NodeWrapper<NodeIds<86, 86, 0>, CPlayerPedGroupDataNode, 19>,
 			NodeWrapper<NodeIds<86, 86, 0>, CPlayerAmbientModelStreamingNode, 5>,
 			NodeWrapper<NodeIds<86, 86, 0>, CPlayerGamerDataNode, 370>,

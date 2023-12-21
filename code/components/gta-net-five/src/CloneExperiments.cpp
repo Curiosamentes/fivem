@@ -437,10 +437,16 @@ static hook::cdecl_stub<void* (CNetGamePlayer*)> getPlayerPedForNetPlayer([]()
 });
 
 #ifdef GTA_FIVE
-static const uint32_t g_entityNetObjOffset = 208;
+static constexpr uint32_t g_entityNetObjOffset = 208;
 #elif IS_RDR3
-static const uint32_t g_entityNetObjOffset = 224;
+static constexpr uint32_t g_entityNetObjOffset = 224;
 #endif
+
+rage::netObject* GetNetObjectFromEntity(void* entity)
+{
+	// technically must be at least CDynamicEntity
+	return *(rage::netObject**)((char*)entity + g_entityNetObjOffset);
+}
 
 rage::netObject* GetLocalPlayerPedNetObject()
 {
@@ -448,9 +454,7 @@ rage::netObject* GetLocalPlayerPedNetObject()
 
 	if (ped)
 	{
-		auto netObj = *(rage::netObject**)((char*)ped + g_entityNetObjOffset);
-
-		return netObj;
+		return GetNetObjectFromEntity(ped);
 	}
 
 	return nullptr;
@@ -489,7 +493,7 @@ void HandleClientDrop(const NetLibraryClientInfo& info)
 
 		if (ped)
 		{
-			auto netObj = *(rage::netObject**)((char*)ped + g_entityNetObjOffset);
+			auto netObj = GetNetObjectFromEntity(ped);
 
 			if (netObj)
 			{
@@ -736,6 +740,21 @@ static hook::cdecl_stub<CNetGamePlayer*(void*)> _netPlayerCtor([]()
 #endif
 });
 
+#ifdef GTA_FIVE
+// Offset is usually 0xA0, but can differ on ancient builds
+static int g_CNetPlayerOffset_PlayerInfo = 0;
+struct CPlayerInfo_Five;
+static hook::cdecl_stub<CPlayerInfo_Five*(void*, uint64_t, void*)> _playerInfoCtor([]() 
+{
+	return hook::get_pattern("48 83 EC 30 65 4C 8B 0C 25 ? 00 00 00 0F 29 70 C8 45 33 ED", -0x18);
+});
+// this appears to be a substruct that makes up a good chunk of the beginning of the CPlayerInfo
+static hook::cdecl_stub<void*()> _getLocalGamerInfo([]() 
+{
+	return hook::get_address<void*>(hook::get_pattern("E8 ? ? ? ? 33 D2 48 8B CB 4C 8B C0 E8 ? ? ? ? 4D 8B CE"), 1, 5);
+});
+#endif	
+
 static CNetGamePlayer*(*g_origAllocateNetPlayer)(void*);
 
 static CNetGamePlayer* AllocateNetPlayer(void* mgr)
@@ -746,7 +765,7 @@ static CNetGamePlayer* AllocateNetPlayer(void* mgr)
 	}
 
 #ifdef GTA_FIVE
-	void* plr = malloc(xbr::IsGameBuildOrGreater<2824>() ? 800 : xbr::IsGameBuildOrGreater<2372>() ? 704: xbr::IsGameBuildOrGreater<2060>() ? 688 : 672);
+	void* plr = malloc(xbr::IsGameBuildOrGreater<3095>() ? 816 : xbr::IsGameBuildOrGreater<2824>() ? 800 : xbr::IsGameBuildOrGreater<2372>() ? 704: xbr::IsGameBuildOrGreater<2060>() ? 688 : 672);
 #elif IS_RDR3
 	void* plr = malloc(xbr::IsGameBuildOrGreater<1436>() ? 2736 : 2784);
 #endif
@@ -759,6 +778,31 @@ static CNetGamePlayer* AllocateNetPlayer(void* mgr)
 #endif
 
 	return player;
+}
+
+// fix: some Events expect the CPlayerInfo to be non-null in the CNetGamePlayer (It is not set in the constructor)
+static void Player31_ApplyPlayerInfo(CNetGamePlayer* player)
+{
+#ifdef GTA_FIVE
+	static void* infoMem = nullptr;
+	if (!infoMem)
+	{
+		infoMem = malloc(0x2000);
+		CPlayerInfo_Five* info = _playerInfoCtor(infoMem, 0, _getLocalGamerInfo());
+		*(CPlayerInfo_Five**)((uint64_t)player + g_CNetPlayerOffset_PlayerInfo) = info;
+	}
+	else
+	{
+		*(CPlayerInfo_Five**)((uint64_t)player + g_CNetPlayerOffset_PlayerInfo) = (CPlayerInfo_Five*)infoMem;
+	}
+#endif
+}
+// Clear the playerInfo after events
+static void Player31_ClearPlayerInfo(CNetGamePlayer* player)
+{
+#ifdef GTA_FIVE
+	*(CPlayerInfo_Five**)((uint64_t)player + g_CNetPlayerOffset_PlayerInfo) = nullptr;
+#endif
 }
 
 #include <minhook.h>
@@ -1853,7 +1897,15 @@ static HookFunction hookFunction([]()
 	MH_Initialize();
 
 #ifdef GTA_FIVE
-	MH_CreateHook((xbr::IsGameBuildOrGreater<2545>()) ? hook::get_pattern("B1 0A 48 89 03 33 C0 48 89", -0x1F) : hook::get_pattern("48 89 03 33 C0 B1 0A 48 89", -0x15), NetworkObjectMgrCtorStub, (void**)&g_origNetworkObjectMgrCtor);
+	if (xbr::IsGameBuildOrGreater<2545>() && !xbr::IsGameBuildOrGreater<3095>())
+	{
+		MH_CreateHook(hook::get_pattern("B1 0A 48 89 03 33 C0 48 89", -0x1F), NetworkObjectMgrCtorStub, (void**)&g_origNetworkObjectMgrCtor);
+	}
+	else
+	{
+		MH_CreateHook(hook::get_pattern("48 89 03 33 C0 B1 0A 48 89", -0x15), NetworkObjectMgrCtorStub, (void**)&g_origNetworkObjectMgrCtor);
+	}
+
 	MH_CreateHook(hook::get_pattern("4C 8B F1 41 BD 05", -0x22), PassObjectControlStub, (void**)&g_origPassObjectControl);
 	MH_CreateHook(hook::get_pattern("8A 41 49 4C 8B F2 48 8B", -0x10), SetOwnerStub, (void**)&g_origSetOwner);
 #elif IS_RDR3
@@ -1999,7 +2051,7 @@ static HookFunction hookFunction([]()
 	MH_CreateHook(hook::get_pattern("48 83 EC 28 33 C0 38 05 ? ? ? ? 74 0A"), GetPlayerByIndexNet, (void**)&g_origGetPlayerByIndexNet);
 
 #ifdef GTA_FIVE
-	MH_CreateHook(hook::get_pattern("75 07 85 C9 0F 94 C3 EB", -0x19), IsNetworkPlayerActive, (void**)&g_origIsNetworkPlayerActive);
+	MH_CreateHook(hook::get_pattern("75 07 ? C9 0F 94 C3 EB", xbr::IsGameBuildOrGreater<3095>() ? -0x27 : -0x19), IsNetworkPlayerActive, (void**)&g_origIsNetworkPlayerActive);
 	MH_CreateHook(hook::get_pattern("75 07 85 C9 0F 94 C0 EB", -0x13), IsNetworkPlayerConnected, (void**)&g_origIsNetworkPlayerConnected); // connected
 #elif IS_RDR3
 	MH_CreateHook(hook::get_pattern("75 0A 85 C9 0F 94 C3 E9", -0x22), IsNetworkPlayerActive, (void**)&g_origIsNetworkPlayerActive);
@@ -2033,7 +2085,7 @@ static HookFunction hookFunction([]()
 	}
 
 #ifdef GTA_FIVE
-	MH_CreateHook(hook::get_pattern("48 85 DB 74 20 48 8B 03 48 8B CB FF 50 ? 48 8B", -0x34),
+	MH_CreateHook(hook::get_pattern("48 85 DB 74 20 48 8B 03 48 8B CB FF 50 ? 48 8B", xbr::IsGameBuildOrGreater<3095>() ? -0x3D : -0x34),
 		(xbr::IsGameBuildOrGreater<2824>()) ? GetPlayerFromGamerId<2824> :
 		(xbr::IsGameBuildOrGreater<2372>()) ? GetPlayerFromGamerId<2372> :
 		(xbr::IsGameBuildOrGreater<2060>()) ? GetPlayerFromGamerId<2060> : GetPlayerFromGamerId<1604>,
@@ -2232,7 +2284,7 @@ static HookFunction hookFunction([]()
 	// some built-in text/voice chat logic using physical player index as a fixed 32-sized array index
 	if (xbr::IsGameBuildOrGreater<2699>())
 	{
-		auto location = hook::get_call(hook::get_pattern<char>("E8 ? ? ? ? 8A 0D ? ? ? ? 48 FF C7"));
+		auto location = hook::get_call(hook::get_pattern<char>("48 69 C9 ? ? ? ? 48 81 C1 ? ? ? ? 48 03 CE E8", 17));
 		MH_CreateHook(location, ManageTextVoiceChatStub, (void**)&g_origManageTextVoiceChatStub);	
 	}
 
@@ -3019,6 +3071,8 @@ static void HandleNetGameEvent(const char* idata, size_t len)
 
 			if (ev)
 			{
+				Player31_ApplyPlayerInfo(g_player31);
+
 				ev->HandleReply(&rlBuffer, player);
 
 #ifdef GTA_FIVE
@@ -3034,6 +3088,8 @@ static void HandleNetGameEvent(const char* idata, size_t len)
 
 				delete ev;
 				g_events.erase({ eventType, eventHeader });
+
+				Player31_ClearPlayerInfo(g_player31);
 			}
 		}
 	}
@@ -3267,8 +3323,6 @@ static void SendAlterWantedLevelEvent2Hook(void* a1, void* a2, void* a3, void* a
 }
 #endif
 
-std::string GetType(void* d);
-
 static void NetEventError()
 {
 	auto pool = rage::GetPoolBase("netGameEvent");
@@ -3277,11 +3331,9 @@ static void NetEventError()
 
 	for (int i = 0; i < pool->GetSize(); i++)
 	{
-		auto e = pool->GetAt<void>(i);
-
-		if (e)
+		if (const auto netGameEvent = pool->GetAt<rage::netGameEvent>(i))
 		{
-			poolCount[GetType(e)]++;
+			poolCount[netGameEvent->GetName()]++;
 		}
 	}
 
@@ -4211,6 +4263,12 @@ static HookFunction hookFunctionTime([]()
 	MH_EnableHook(MH_ALL_HOOKS);
 
 #ifdef GTA_FIVE
+	char* loc = hook::get_pattern<char>("48 8B 81 ? 00 00 00 48 83 C0 20 C3");
+	loc += 3;
+	g_CNetPlayerOffset_PlayerInfo = *(int*)loc;
+#endif
+
+#ifdef GTA_FIVE
 	if (xbr::IsGameBuildOrGreater<2372>())
 	{
 		g_netTimeSync<2372> = hook::get_address<netTimeSync<2372>**>(hook::get_pattern("48 8B 0D ? ? ? ? 45 33 C9 45 33 C0 41 8D 51 01 E8", 3));
@@ -4702,7 +4760,7 @@ static InitFunction initFunction([]()
 			return;
 		}
 
-		auto netObj = *(rage::netObject**)(entity + g_entityNetObjOffset);
+		auto netObj = GetNetObjectFromEntity(entity);
 
 		static char blah[90000];
 
@@ -4743,7 +4801,7 @@ static InitFunction initFunction([]()
 			return;
 		}
 
-		auto netObj = *(rage::netObject**)(entity + g_entityNetObjOffset);
+		auto netObj = GetNetObjectFromEntity(entity);
 
 		static char blah[90000];
 
@@ -4931,7 +4989,7 @@ static InitFunction initFunction([]()
 			return;
 		}
 
-		auto obj = *(rage::netObject**)(entity + g_entityNetObjOffset);
+		auto obj = GetNetObjectFromEntity(entity);
 
 		auto data = context.GetArgument<const char*>(1);
 
@@ -5003,7 +5061,7 @@ static InitFunction initFunction([]()
 			return;
 		}
 
-		auto obj = *(rage::netObject**)(entity + g_entityNetObjOffset);
+		auto obj = GetNetObjectFromEntity(entity);
 		//obj->GetBlender()->m_30();
 		obj->GetBlender()->m_58();
 	});
@@ -5011,7 +5069,7 @@ static InitFunction initFunction([]()
 	static ConsoleCommand saveCloneCmd("save_clone", [](const std::string& address)
 	{
 		uintptr_t addressPtr = _strtoui64(address.c_str(), nullptr, 16);
-		auto netObj = *(rage::netObject**)(addressPtr + g_entityNetObjOffset);
+		auto netObj = GetNetObjectFromEntity((void*)addressPtr);
 
 		static char blah[90000];
 
