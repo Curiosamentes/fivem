@@ -7,12 +7,6 @@
 
 #define PURECALL() __asm { jmp _purecall }
 
-static hook::thiscall_stub<void(rage::dlDrawCommandBuffer*, int)> addDrawCommand([] ()
-{
-	return hook::pattern("48 8B D9 44 23 91 38 18 00 00 41 81").count(1).get(0).get<void>(-0xC);
-});
-
-
 static hook::thiscall_stub<void(rage::dlDrawCommandBuffer*, uint32_t)> alignDrawCommandBuffer([]()
 {
 	return hook::get_call(hook::pattern("E8 ? ? ? ? 8D 4E 21").count(1).get(0).get<void>(0));
@@ -82,11 +76,6 @@ T* AllocateDrawCommand()
 
 static rage::dlDrawCommandBuffer** g_drawCommandBuffer;
 
-void rage::dlDrawCommandBuffer::AddDrawCommand(int type)
-{
-	return addDrawCommand(this, type);
-}
-
 void rage::dlDrawCommandBuffer::AlignBuffer(uint32_t alignment)
 {
 	return alignDrawCommandBuffer(this, alignment);
@@ -106,7 +95,7 @@ void EnqueueGenericDrawCommand(void(*cb)(uintptr_t, uintptr_t), uintptr_t* arg1,
 {
 	if (!IsOnRenderThread())
 	{
-		(*g_drawCommandBuffer)->AddDrawCommand(8);
+		(*g_drawCommandBuffer)->AlignBuffer(8);
 
 		GenericTwoArgDrawCommand* dc = AllocateDrawCommand<GenericTwoArgDrawCommand>();
 		dc->Initialize(cb, arg1, arg2);
@@ -245,12 +234,6 @@ static hook::thiscall_stub<void(intptr_t)> popSubShaderUnk([] ()
 
 static hook::cdecl_stub<void()> popImShaderAndResetParams([] ()
 {
-	// 393-
-	if (Is372())
-	{
-		return hook::get_call(hook::pattern("0F 28 D8 E8 ? ? ? ? 48 8D 4C 24 68 E8 ? ? ? ? 48 8B").count(1).get(0).get<void>(13));
-	}
-
 	// 463/505+
 	return hook::get_call(hook::pattern("F3 0F 11 64 24 20 E8 ? ? ? ? 48 8D 8C 24 98").count(1).get(0).get<void>(19));
 });
