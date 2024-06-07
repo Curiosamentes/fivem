@@ -210,6 +210,10 @@
 	path = vendor/lmprof
 	url = https://github.com/citizenfx/lmprof.git
 	branch = grit
+[submodule "vendor/rpmalloc"]
+	path = vendor/rpmalloc
+	url = https://github.com/citizenfx/rpmalloc.git
+	branch = lua
 [submodule "vendor/wil"]
 	path = vendor/wil
 	url = https://github.com/microsoft/wil.git
@@ -441,3 +445,7 @@
 [submodule "vendor/boost-submodules/boost-tokenizer"]
 	path = vendor/boost-submodules/boost-tokenizer
 	url = https://github.com/boostorg/tokenizer
+[submodule "vendor/msgpack-cs"]
+	path = vendor/msgpack-cs
+	url = https://github.com/citizenfx/msgpack-cs.git
+	branch = production
